@@ -1,0 +1,6 @@
+[submodule "extern/certifiable-tools"]
+	path = extern/certifiable-tools
+	url = git@github.com:utiasASRL/certifiable-tools.git
+[submodule "extern/clipper"]
+	path = extern/clipper
+	url = git@github.com:holmesco/clipper.git

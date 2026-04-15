@@ -1,3 +1,7 @@
+#directories
 results/
 
+#files
 *.pyc
+extern/mosek*
+uv.lock
