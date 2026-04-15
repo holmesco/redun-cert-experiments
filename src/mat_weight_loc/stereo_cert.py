@@ -5,7 +5,7 @@ from torch.profiler import record_function
 from scipy.sparse import csc_matrix
 from scipy.linalg import qr
 
-from examples.utils.lie_algebra import se3_inv, se3_log
+from utils.lie_algebra import se3_inv, se3_log
 from cert_tools.sdp_solvers import solve_sdp_fusion
 from ranktools import AnalyticCenter, AnalyticCenterParams, LinearSolverType, LowRankPrecondMethod
 

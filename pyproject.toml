@@ -32,6 +32,7 @@ dependencies = [
 	"debugpy>=1.8.20",
 	"ranktools",
 	"clipperpy",
+	"cert-tools",
 ]
 
 [project.optional-dependencies]
@@ -48,11 +49,13 @@ torchaudio = { index = "pytorch-cu121" }
 torchvision = { index = "pytorch-cu121" }
 ranktools = { path = "../ranktools", editable = true }
 clipperpy = { workspace = true }
+cert-tools = { workspace = true, editable = true }
 
 [tool.uv.workspace]
 members = [
     "extern/clipper",
+    "extern/certifiable-tools",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/max_clique","src/mat_weight_loc","src/utils"]

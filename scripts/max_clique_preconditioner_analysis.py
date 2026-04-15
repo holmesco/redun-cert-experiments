@@ -137,7 +137,7 @@ def run_analysis(
     return pd.DataFrame(records)
 
 
-DEFAULT_CSV = "/workspace/python/results/max_clique_preconditioner_analysis.csv"
+DEFAULT_CSV = "/workspace/experiments/results/max_clique_preconditioner_analysis.csv"
 
 
 def plot_runtime_vs_outrat(csv_path: str = DEFAULT_CSV) -> None:
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     print("=" * 70)
     print(df.to_string(index=False))
 
-    out_path = "/workspace/python/results/max_clique_preconditioner_analysis.csv"
+    out_path = "/workspace/experiments/results/max_clique_preconditioner_analysis.csv"
     df.to_csv(out_path, index=False)
     print(f"\nResults saved to {out_path}")
 

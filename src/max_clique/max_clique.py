@@ -292,7 +292,7 @@ class MaxCliqueProblem:
     
 if __name__ == "__main__":
     load_soln = True
-    output_path = "/workspace/python/scripts/u_solution.pkl"
+    output_path = "/workspace/experiments/scripts/u_solution.pkl"
     
     np.random.seed(0)
     # Build a bunny dataset
@@ -301,7 +301,7 @@ if __name__ == "__main__":
     n2o = 50     # number of outliers in data (i.e., seen in view 2)
     outrat = 0.9 # outlier ratio of initial association set
     sigma = 0.01  # uniform noise [m] range
-    pcfile = '/workspace/python/examples/bun10k.ply'  # Object file
+    pcfile = '/workspace/experiments/data/bun10k.ply'  # Object file
     # Random pose transormation
     T_21 = np.eye(4)
     T_21[0:3,0:3] = Rotation.random().as_matrix()

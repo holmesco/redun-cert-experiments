@@ -3,7 +3,7 @@ import theseus as th
 import torch
 import torch.nn as nn
 
-from examples.utils.lie_algebra import se3_inv, se3_log
+from utils.lie_algebra import se3_inv, se3_log
 
 
 class LieOptPoseEstimator(nn.Module):

@@ -17,7 +17,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation
 
-from examples.max_clique.max_clique import generate_dataset, MaxCliqueProblem
+from max_clique.max_clique import generate_dataset, MaxCliqueProblem
 from ranktools import AnalyticCenterParams, LinearSolverType, LowRankPrecondMethod
 
 # ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ from ranktools import AnalyticCenterParams, LinearSolverType, LowRankPrecondMeth
 N_OUTRAT = 10
 
 # Number of randomized trials to run per outlier ratio
-N_TRIALS_PER_OUTRAT = 10
+N_TRIALS_PER_OUTRAT = 5
 
 # Range of outlier ratios (log-spaced between these bounds)
 OUTRAT_MIN = 0.1
@@ -44,7 +44,7 @@ M_ASSOC = 130       # total number of associations
 N1 = 130            # model points in view 1
 N2O = 13            # outlier points in view 2
 SIGMA = 0.01        # uniform noise [m]
-PCFILE = "/workspace/python/examples/bun10k.ply"
+PCFILE = "/workspace/experiments/data/bun10k.ply"
 
 # Random seed for reproducibility
 SEED = 0
@@ -73,15 +73,15 @@ def make_ac_params(solver_type: LinearSolverType) -> AnalyticCenterParams:
     params.lin_solve_max_iter = 400
     params.lin_solve_tol = 1e-5
     params.lrp_params.tau = 1e-6
-    params.delta_init = 1e-6
+    params.delta_init = 1e-7
     params.delta_min = 1e-8
     # turn off rescaling
     params.rescale_lin_sys = False
     # Turn off perturbations:
     params.perturb_constraints = False
-    params.perturb_cost = False
+    params.perturb_cost = True
     params.adaptive_perturb = True
-    params.cost_perturb = 1e-4
+    params.cost_offset = 1e-4
     # Set preconditioner
     params.lrp_params.method = LowRankPrecondMethod.SparseLDLT
     
@@ -185,7 +185,7 @@ def run_analysis(
     return df
 
 
-DEFAULT_CSV = "/workspace/python/results/max_clique_analysis.csv"
+DEFAULT_CSV = "/workspace/experiments/results/max_clique_analysis.csv"
 
 
 def plot_runtime_vs_constraints(csv_path: str = DEFAULT_CSV) -> None:
@@ -413,7 +413,7 @@ if __name__ == "__main__":
     print(df.to_string(index=False))
 
     # Persist to CSV for later inspection
-    out_path = "/workspace/python/results/max_clique_analysis_lrp.csv"
+    out_path = "/workspace/experiments/results/max_clique_analysis.csv"
     df.to_csv(out_path, index=False)
     print(f"\nResults saved to {out_path}")
 

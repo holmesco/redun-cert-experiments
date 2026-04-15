@@ -4,13 +4,13 @@ import pandas as pd
 import time
 import matplotlib.pyplot as plt
 
-from examples.utils.stereo_camera_model import StereoCameraModel
-from examples.utils.stereo_utils import get_gt_setup
-from examples.utils.keypoint_tools import get_inv_cov_weights
-from examples.utils.lie_algebra import se3_exp, se3_inv, se3_log
+from utils.stereo_camera_model import StereoCameraModel
+from utils.stereo_utils import get_gt_setup
+from utils.keypoint_tools import get_inv_cov_weights
+from utils.lie_algebra import se3_exp, se3_inv, se3_log
 
-from examples.mat_weight_loc.lieopt_pose_est import LieOptPoseEstimator
-from examples.mat_weight_loc.stereo_cert import StereoPoseCertifier
+from mat_weight_loc.lieopt_pose_est import LieOptPoseEstimator
+from mat_weight_loc.stereo_cert import StereoPoseCertifier
 
 
 def set_seed(x):
