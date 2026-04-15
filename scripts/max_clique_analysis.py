@@ -32,7 +32,7 @@ N_TRIALS_PER_OUTRAT = 5
 
 # Range of outlier ratios (log-spaced between these bounds)
 OUTRAT_MIN = 0.1
-OUTRAT_MAX = 0.90
+OUTRAT_MAX = 0.7
 
 # Number of trials (from the low-outrat end) for 
 # which slow solver is also run.  Set to N_OUTRAT 
@@ -40,9 +40,9 @@ OUTRAT_MAX = 0.90
 N_FULL_MAT = 0
 
 # Dataset parameters (mirroring max_clique.py __main__)
-M_ASSOC = 130       # total number of associations
-N1 = 130            # model points in view 1
-N2O = 13            # outlier points in view 2
+M_ASSOC = 200       # total number of associations
+N1 = 200            # model points in view 1
+N2O = 20            # outlier points in view 2
 SIGMA = 0.01        # uniform noise [m]
 PCFILE = "/workspace/experiments/data/bun10k.ply"
 
