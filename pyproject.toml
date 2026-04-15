@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "redun-cert-exp"
 version = "0.0.1"
 description = "Experiments with certifiers for SDP relaxations with redundant constraints"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.13"
 dependencies = [
 	"numpy<2",
 	"scipy",
@@ -19,24 +19,26 @@ dependencies = [
 	"pybind11",
 	"pybind11-stubgen",
 	"scikit-build-core",
-	"theseus-ai",
 	"cmake",
 	"ninja",
 	"pytest",
-	"torch==2.2.1",
-	"torchaudio==2.2.1",
-	"torchvision==0.17.1",
-	"torchelastic==0.2.2",
-	"open3d>=0.19.0",
+	"torch==2.5.1",
+	"torchvision==0.20.1",
+	"torchelastic",
 	"asrl-pylgmath>=1.0.3",
 	"debugpy>=1.8.20",
 	"ranktools",
 	"clipperpy",
 	"cert-tools",
+	"theseus-ai>=0.2.3",
+	"gtsam-develop>=4.3a1.dev202604152020",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
+
+[tool.uv]
+torch-backend = "auto"
 
 [[tool.uv.index]]
 name = "pytorch-cu121"
