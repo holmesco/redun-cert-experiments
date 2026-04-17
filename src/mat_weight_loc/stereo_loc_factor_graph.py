@@ -1,5 +1,6 @@
 import gtsam
 import numpy as np
+import time
 
 from gtsam.symbol_shorthand import X, S, T
 
@@ -34,10 +35,9 @@ class MatWeightLocResidual:
         residual = keypoint_trg_pred - self.keypoint_trg
 
         return residual
-    
-def build_stereo_loc_fg(
-        keypoint_3D_src, keypoint_3D_trg, weight, inv_cov_weight=None
-    ):
+
+
+def build_stereo_loc_fg(keypoint_3D_src, keypoint_3D_trg, weight, inv_cov_weight=None):
 
     n_points = keypoint_3D_src.shape[1]
     # create expression leaf for pose variable
@@ -67,6 +67,7 @@ def build_stereo_loc_fg(
         graph.add(factor)
     return graph
 
+
 def solve_stereo_loc_fg(graph, T_init, verbose=False):
     # Create initial values
     values = gtsam.Values()
@@ -78,10 +79,14 @@ def solve_stereo_loc_fg(graph, T_init, verbose=False):
     else:
         opt_params.setVerbosityLM("SILENT")
 
-    optimizer = gtsam.LevenbergMarquardtOptimizer(
-        graph, values, opt_params
-    )
+    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, opt_params)
     # Optimize
+    start_time = time.perf_counter()
     result = optimizer.optimize()
-    return result.atPose3(X(0)).matrix()
+    runtime_s = time.perf_counter() - start_time
+    optimized_pose = result.atPose3(X(0)).matrix()
+    if verbose:
+        print(f"Optimization runtime: {runtime_s:.6f} s")
+        print("Optimization result:\n", optimized_pose)
 
+    return optimized_pose, runtime_s

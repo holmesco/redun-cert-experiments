@@ -50,7 +50,7 @@ class TestEstimatorConvergence:
         
 class TestFactorGraphOptimization:
     def test_converges_from_ground_truth_initialization(self, stereo_problem):
-        T_est = stereo_problem.solve_factor_graph(stereo_problem.T_trg_src[0].cpu().numpy(), verbose=True)
+        T_est,_ = stereo_problem.solve_factor_graph(stereo_problem.T_trg_src[0].cpu().numpy(), verbose=True)
         T_est = torch.from_numpy(T_est)
         _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-7)
 
@@ -64,7 +64,7 @@ class TestFactorGraphOptimization:
         T_pert = se3_exp(xi_pert)
         T_init = T_pert.bmm(stereo_problem.T_trg_src)
 
-        T_est = stereo_problem.solve_factor_graph(T_init[0].cpu().numpy(), verbose=True)
+        T_est,_ = stereo_problem.solve_factor_graph(T_init[0].cpu().numpy(), verbose=True)
         T_est = torch.from_numpy(T_est)
         _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-8)
 

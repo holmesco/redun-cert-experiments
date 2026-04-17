@@ -13,12 +13,20 @@ from utils.lie_algebra import se3_exp
 
 from mat_weight_loc.lieopt_pose_est import LieOptPoseEstimator
 from mat_weight_loc.stereo_cert import StereoPoseCertifier
-from mat_weight_loc.stereo_loc_factor_graph import build_stereo_loc_fg, solve_stereo_loc_fg
+from mat_weight_loc.stereo_loc_factor_graph import (
+    build_stereo_loc_fg,
+    solve_stereo_loc_fg,
+)
 
 
 def set_seed(x):
     np.random.seed(x)
     torch.manual_seed(x)
+
+
+# Default dtype
+torch.set_default_dtype(torch.float64)
+torch.autograd.set_detect_anomaly(True)
 
 
 class StereoLocalizationProblem:
@@ -272,13 +280,12 @@ class StereoLocalizationProblem:
 
         return r_v0s, C_v0s
 
-    
-
     def solve_factor_graph(self, T_init, verbose=False):
-        T_est = solve_stereo_loc_fg(self.factor_graph, T_init, verbose=verbose)
-        return T_est        
+        T_est, runtime = solve_stereo_loc_fg(self.factor_graph, T_init, verbose=verbose)
 
-    def run_initializations_and_certify(
+        return T_est, runtime
+
+    def run_inits_and_certify(
         self, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2
     ):
         """Generate N random initializations, run the estimator, certify each solution, and print a DataFrame.
@@ -340,7 +347,11 @@ class StereoLocalizationProblem:
 
         for i in range(N_init):
             T_init = T_inits[i : i + 1].to(self.device)
-            T_est = self.run_estimator(T_init, verbose=False)
+            # T_est = self.run_estimator(T_init, verbose=False)
+            T_est, runtime_gtsam = self.solve_factor_graph(
+                T_init[0].cpu().numpy(), verbose=False
+            )
+            T_est = torch.from_numpy(T_est[None, :, :])
             T_est_list.append(T_est.detach())
             x_cand = self.certifier.transform_to_x(T_est)[0].detach().cpu().numpy()
 
@@ -359,6 +370,7 @@ class StereoLocalizationProblem:
                     "min_eig": float(cert_result.min_eig),
                     "complementarity": float(cert_result.complementarity),
                     "certifier_time_s": float(cert_result.solver_time),
+                    "gtsam_time_s": float(runtime_gtsam),
                 }
             )
 
@@ -371,6 +383,19 @@ class StereoLocalizationProblem:
 
         global_mask = df["certified"]
         local_mask = ~global_mask
+
+        global_avg_gtsam_time = (
+            df.loc[global_mask, "gtsam_time_s"].mean() if global_mask.any() else np.nan
+        )
+        local_avg_gtsam_time = (
+            df.loc[local_mask, "gtsam_time_s"].mean() if local_mask.any() else np.nan
+        )
+        print(
+            f"Average local factor graph solve time (global minima): {global_avg_gtsam_time:.6f} s"
+        )
+        print(
+            f"Average local factor graph solve time (local minima): {local_avg_gtsam_time:.6f} s"
+        )
 
         global_avg_cert_time = (
             df.loc[global_mask, "certifier_time_s"].mean()
@@ -523,6 +548,4 @@ def create_stereo_localization_problem(batch_size=1, N_map=50, device="cuda:0", 
 if __name__ == "__main__":
     stereo_loc = create_stereo_localization_problem(batch_size=1, N_map=50)
     # stereo_loc.certifier.check_constraint_linear_independence()
-    df = stereo_loc.run_initializations_and_certify(
-        N_init=100, plot_results=True, seed=0
-    )
+    df = stereo_loc.run_inits_and_certify(N_init=100, plot_results=True, seed=0)
