@@ -11,7 +11,6 @@ from utils.stereo_utils import get_gt_setup
 from utils.keypoint_tools import get_inv_cov_weights
 from utils.lie_algebra import se3_exp
 
-from mat_weight_loc.lieopt_pose_est import LieOptPoseEstimator
 from mat_weight_loc.stereo_cert import StereoPoseCertifier
 from mat_weight_loc.stereo_loc_factor_graph import (
     build_stereo_loc_fg,
@@ -43,13 +42,6 @@ class StereoLocalizationProblem:
         self.device = self.keypoints_3D_src.device
         self.T_trg_src = None
 
-        # Initialize local pose estimator
-        self.estimator: LieOptPoseEstimator = LieOptPoseEstimator(
-            self.T_s_v,
-            N_batch=self.batch_size,
-            N_map=self.N_map,
-        )
-        self.estimator.to(self.device)
         # Get inverse covariance weights
         # Get matrix weights - assuming 0.5 pixel std dev
         valid = self.weights > 0
@@ -71,18 +63,6 @@ class StereoLocalizationProblem:
             self.weights[0][0].cpu().numpy(),
             self.inv_cov_weights[0].cpu().numpy(),
         )
-
-    def run_estimator(self, T_init, verbose=True):
-        # Run estimator
-        T_trg_src = self.estimator(
-            self.keypoints_3D_src,
-            self.keypoints_3D_trg,
-            self.weights,
-            T_init,
-            self.inv_cov_weights,
-            verbose=verbose,
-        )
-        return T_trg_src
 
     def plot_targ_frames_3d(
         self, T_ests, is_global_min, T_inits=None, axis_scale=0.2, title=None
@@ -288,7 +268,7 @@ class StereoLocalizationProblem:
     def run_inits_and_certify(
         self, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2
     ):
-        """Generate N random initializations, run the estimator, certify each solution, and print a DataFrame.
+        """Generate N random initializations, run local factor-graph optimization, certify each solution, and print a DataFrame.
 
         Args:
             N_init (int): Number of random initializations.
@@ -347,7 +327,6 @@ class StereoLocalizationProblem:
 
         for i in range(N_init):
             T_init = T_inits[i : i + 1].to(self.device)
-            # T_est = self.run_estimator(T_init, verbose=False)
             T_est, runtime_gtsam = self.solve_factor_graph(
                 T_init[0].cpu().numpy(), verbose=False
             )

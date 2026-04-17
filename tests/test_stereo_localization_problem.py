@@ -29,29 +29,13 @@ def stereo_problem():
         seed=0,
     )
 
-
-class TestEstimatorConvergence:
-    def test_converges_from_ground_truth_initialization(self, stereo_problem):
-        T_est = stereo_problem.run_estimator(stereo_problem.T_trg_src.to(stereo_problem.device), verbose=False)
-        _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-7)
-
-    def test_converges_from_perturbed_initialization(self, stereo_problem):
-        pert = 0.5
-        xi_pert = torch.tensor(
-            [[pert, pert, pert, pert, pert, pert]],
-            dtype=stereo_problem.T_trg_src.dtype,
-            device=stereo_problem.T_trg_src.device,
-        )
-        T_pert = se3_exp(xi_pert)
-        T_init = T_pert.bmm(stereo_problem.T_trg_src)
-
-        T_est = stereo_problem.run_estimator(T_init.to(stereo_problem.device), verbose=False)
-        _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-8)
-        
 class TestFactorGraphOptimization:
     def test_converges_from_ground_truth_initialization(self, stereo_problem):
-        T_est,_ = stereo_problem.solve_factor_graph(stereo_problem.T_trg_src[0].cpu().numpy(), verbose=True)
-        T_est = torch.from_numpy(T_est)
+        T_est, _ = stereo_problem.solve_factor_graph(
+            stereo_problem.T_trg_src[0].cpu().numpy(),
+            verbose=True,
+        )
+        T_est = torch.from_numpy(T_est[None, :, :])
         _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-7)
 
     def test_converges_from_perturbed_initialization(self, stereo_problem):
@@ -64,8 +48,11 @@ class TestFactorGraphOptimization:
         T_pert = se3_exp(xi_pert)
         T_init = T_pert.bmm(stereo_problem.T_trg_src)
 
-        T_est,_ = stereo_problem.solve_factor_graph(T_init[0].cpu().numpy(), verbose=True)
-        T_est = torch.from_numpy(T_est)
+        T_est, _ = stereo_problem.solve_factor_graph(
+            T_init[0].cpu().numpy(),
+            verbose=True,
+        )
+        T_est = torch.from_numpy(T_est[None, :, :])
         _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-8)
 
 
@@ -79,8 +66,12 @@ class TestCertification:
         result = stereo_problem.certifier.certify_solution(x_cand[0])
         assert bool(result.certified)
 
-    def test_estimator_solution_is_certified(self, stereo_problem):
-        T_est = stereo_problem.run_estimator(stereo_problem.T_trg_src.to(stereo_problem.device), verbose=False)
+    def test_factor_graph_solution_is_certified(self, stereo_problem):
+        T_est, _ = stereo_problem.solve_factor_graph(
+            stereo_problem.T_trg_src[0].cpu().numpy(),
+            verbose=False,
+        )
+        T_est = torch.from_numpy(T_est[None, :, :])
         x_cand = stereo_problem.certifier.transform_to_x(T_est)
         x_cand = x_cand.detach().cpu().numpy()
         result = stereo_problem.certifier.certify_solution(x_cand[0])
