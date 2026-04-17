@@ -4,78 +4,43 @@ import pandas as pd
 import time
 import matplotlib.pyplot as plt
 
+import gtsam
+
 from utils.stereo_camera_model import StereoCameraModel
 from utils.stereo_utils import get_gt_setup
 from utils.keypoint_tools import get_inv_cov_weights
-from utils.lie_algebra import se3_exp, se3_inv, se3_log
+from utils.lie_algebra import se3_exp
 
 from mat_weight_loc.lieopt_pose_est import LieOptPoseEstimator
 from mat_weight_loc.stereo_cert import StereoPoseCertifier
+from mat_weight_loc.stereo_loc_factor_graph import build_stereo_loc_fg, solve_stereo_loc_fg
 
 
 def set_seed(x):
     np.random.seed(x)
     torch.manual_seed(x)
 
+
 class StereoLocalizationProblem:
-    def __init__(self, batch_size=1, N_map=50, device="cuda:0"):
-        # Default dtype
-        torch.set_default_dtype(torch.float64)
-        torch.autograd.set_detect_anomaly(True)
-        self.device = device
-        # Set seed
-        set_seed(0)
-        # Store vars
-        self.batch_size = batch_size
-        self.N_map = N_map
-        # Set up test problem
-        
-        r_v0s, C_v0s, r_ls = get_gt_setup(
-            N_map=50, N_batch=batch_size, traj_type="circle", n_turns=0.25
-        )
-        r_v0s = torch.tensor(r_v0s)
-        C_v0s = torch.tensor(C_v0s)
-        r_ls = torch.tensor(r_ls)[None, :, :].expand(batch_size, -1, -1)
-        # Define Stereo Camera
-        stereo_cam = StereoCameraModel(0.0, 0.0, 484.5, 0.24).cuda()
-        # Frame tranform from vehicle to camera (sensor)
-        pert = 0.0 # Set to zero for now
-        xi_pert = torch.tensor([[pert, pert, pert, pert, pert, pert]])
-        T_s_v = se3_exp(xi_pert)[0]
+    def __init__(self, keypoints_3D_src, keypoints_3D_trg, weights, stereo_cam, T_s_v):
 
-        # Generate image coordinates (in vehicle frame)
-        cam_coords_v = torch.bmm(C_v0s, r_ls - r_v0s)
-        cam_coords_v = torch.concat(
-            [cam_coords_v, torch.ones(batch_size, 1, r_ls.size(2))], dim=1
-        )
+        self.keypoints_3D_src = keypoints_3D_src
+        self.keypoints_3D_trg = keypoints_3D_trg
+        self.weights = weights
+        self.T_s_v = T_s_v
+        self.stereo_cam = stereo_cam
 
-        # Source coords in vehicle frame
-        src_coords_v = torch.concat(
-            [r_ls, torch.ones(batch_size, 1, r_ls.size(2))], dim=1
-        )
-        # Map to camera frame
-        cam_coords = T_s_v[None, :, :].bmm(cam_coords_v)
-        src_coords = T_s_v[None, :, :].bmm(src_coords_v)
-        # Create transformation matrix
-        zeros = torch.zeros(batch_size, 1, 3).type_as(r_v0s)  # Bx1x3
-        one = torch.ones(batch_size, 1, 1).type_as(r_v0s)  # Bx1x1
-        r_0v_v = -C_v0s.bmm(r_v0s)
-        trans_cols = torch.cat([r_0v_v, one], dim=1)  # Bx4x1
-        rot_cols = torch.cat([C_v0s, zeros], dim=1)  # Bx4x3
-        T_trg_src = torch.cat([rot_cols, trans_cols], dim=2)  # Bx4x4
-        # Store values
-        self.keypoints_3D_src = src_coords.cuda()
-        self.keypoints_3D_trg = cam_coords.cuda()
-        self.T_trg_src = T_trg_src
-        self.stereo_cam = stereo_cam
-        # Generate Scalar Weights
-        self.weights = torch.ones(
-            self.keypoints_3D_src.size(0), 1, self.keypoints_3D_src.size(2)
-        ).cuda()
-        self.stereo_cam = stereo_cam
-        self.T_s_v = T_s_v.cuda()
+        self.batch_size = self.keypoints_3D_src.size(0)
+        self.N_map = self.keypoints_3D_src.size(2)
+        self.device = self.keypoints_3D_src.device
+        self.T_trg_src = None
+
         # Initialize local pose estimator
-        self.estimator : LieOptPoseEstimator = LieOptPoseEstimator(self.T_s_v, N_batch=batch_size, N_map=N_map)
+        self.estimator: LieOptPoseEstimator = LieOptPoseEstimator(
+            self.T_s_v,
+            N_batch=self.batch_size,
+            N_map=self.N_map,
+        )
         self.estimator.to(self.device)
         # Get inverse covariance weights
         # Get matrix weights - assuming 0.5 pixel std dev
@@ -84,13 +49,21 @@ class StereoLocalizationProblem:
             self.keypoints_3D_trg, valid, self.stereo_cam
         )
         # Intialize certifier class
-        self.certifier = StereoPoseCertifier(self.T_s_v,
-                                             self.keypoints_3D_src,
-                                             self.keypoints_3D_trg,
-                                             self.weights,
-                                             self.inv_cov_weights)
-        
-        
+        self.certifier = StereoPoseCertifier(
+            self.T_s_v,
+            self.keypoints_3D_src,
+            self.keypoints_3D_trg,
+            self.weights,
+            self.inv_cov_weights,
+        )
+        # Build factor graph
+        self.factor_graph = build_stereo_loc_fg(
+            self.keypoints_3D_src[0].cpu().numpy(),
+            self.keypoints_3D_trg[0].cpu().numpy(),
+            self.weights[0][0].cpu().numpy(),
+            self.inv_cov_weights[0].cpu().numpy(),
+        )
+
     def run_estimator(self, T_init, verbose=True):
         # Run estimator
         T_trg_src = self.estimator(
@@ -103,7 +76,9 @@ class StereoLocalizationProblem:
         )
         return T_trg_src
 
-    def plot_targ_frames_3d(self, T_ests, is_global_min, T_inits=None, axis_scale=0.2, title=None):
+    def plot_targ_frames_3d(
+        self, T_ests, is_global_min, T_inits=None, axis_scale=0.2, title=None
+    ):
         """Plot target frames in 3D from estimated transforms.
 
         Args:
@@ -158,9 +133,39 @@ class StereoLocalizationProblem:
                 ey0 = R0[:, 1] * axis_scale
                 ez0 = R0[:, 2] * axis_scale
 
-                ax.quiver(t0[0], t0[1], t0[2], ex0[0], ex0[1], ex0[2], color=c0, linewidth=1.0, alpha=0.5)
-                ax.quiver(t0[0], t0[1], t0[2], ey0[0], ey0[1], ey0[2], color=c0, linewidth=1.0, alpha=0.4)
-                ax.quiver(t0[0], t0[1], t0[2], ez0[0], ez0[1], ez0[2], color=c0, linewidth=1.0, alpha=0.3)
+                ax.quiver(
+                    t0[0],
+                    t0[1],
+                    t0[2],
+                    ex0[0],
+                    ex0[1],
+                    ex0[2],
+                    color=c0,
+                    linewidth=1.0,
+                    alpha=0.5,
+                )
+                ax.quiver(
+                    t0[0],
+                    t0[1],
+                    t0[2],
+                    ey0[0],
+                    ey0[1],
+                    ey0[2],
+                    color=c0,
+                    linewidth=1.0,
+                    alpha=0.4,
+                )
+                ax.quiver(
+                    t0[0],
+                    t0[1],
+                    t0[2],
+                    ez0[0],
+                    ez0[1],
+                    ez0[2],
+                    color=c0,
+                    linewidth=1.0,
+                    alpha=0.3,
+                )
 
         # Plot optimized poses: global in black, local in orange
         for i in range(T_ests_np.shape[0]):
@@ -176,8 +181,28 @@ class StereoLocalizationProblem:
             ez = R[:, 2] * axis_scale
 
             ax.quiver(t[0], t[1], t[2], ex[0], ex[1], ex[2], color=color, linewidth=1.0)
-            ax.quiver(t[0], t[1], t[2], ey[0], ey[1], ey[2], color=color, linewidth=1.0, alpha=0.75)
-            ax.quiver(t[0], t[1], t[2], ez[0], ez[1], ez[2], color=color, linewidth=1.0, alpha=0.5)
+            ax.quiver(
+                t[0],
+                t[1],
+                t[2],
+                ey[0],
+                ey[1],
+                ey[2],
+                color=color,
+                linewidth=1.0,
+                alpha=0.75,
+            )
+            ax.quiver(
+                t[0],
+                t[1],
+                t[2],
+                ez[0],
+                ez[1],
+                ez[2],
+                color=color,
+                linewidth=1.0,
+                alpha=0.5,
+            )
 
         # Plot source keypoints (3D map points)
         if self.keypoints_3D_src.ndim == 3 and self.keypoints_3D_src.shape[1] >= 3:
@@ -210,8 +235,12 @@ class StereoLocalizationProblem:
         ax.set_title(title if title is not None else "Estimated target frames")
         ax.set_aspect("equal", adjustable="box")
 
-        ax.scatter([], [], [], c=init_global_color, s=35, alpha=0.5, label="init → global")
-        ax.scatter([], [], [], c=init_local_color, s=35, alpha=0.5, label="init → local")
+        ax.scatter(
+            [], [], [], c=init_global_color, s=35, alpha=0.5, label="init → global"
+        )
+        ax.scatter(
+            [], [], [], c=init_local_color, s=35, alpha=0.5, label="init → local"
+        )
         ax.scatter([], [], [], c=opt_global_color, s=40, label="optimized global")
         ax.scatter([], [], [], c=opt_local_color, s=40, label="optimized local")
         ax.legend(loc="best")
@@ -244,8 +273,14 @@ class StereoLocalizationProblem:
         return r_v0s, C_v0s
 
     
-    
-    def run_initializations_and_certify(self, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2):
+
+    def solve_factor_graph(self, T_init, verbose=False):
+        T_est = solve_stereo_loc_fg(self.factor_graph, T_init, verbose=verbose)
+        return T_est        
+
+    def run_initializations_and_certify(
+        self, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2
+    ):
         """Generate N random initializations, run the estimator, certify each solution, and print a DataFrame.
 
         Args:
@@ -259,7 +294,13 @@ class StereoLocalizationProblem:
             pd.DataFrame: Per-run results including cost, certification status, and certifier metrics.
         """
         if self.batch_size != 1:
-            raise ValueError("run_initializations_and_certify currently supports batch_size=1.")
+            raise ValueError(
+                "run_initializations_and_certify currently supports batch_size=1."
+            )
+        if self.T_trg_src is None:
+            raise ValueError(
+                "T_trg_src is required for this analysis. Use create_stereo_localization_problem(...)."
+            )
 
         radius = torch.linalg.norm(self.T_trg_src[0, :3, 3]).item()
         r_v0s_init, C_v0s_init = self.get_random_inits(
@@ -274,8 +315,12 @@ class StereoLocalizationProblem:
             C_v0s_init, dtype=self.T_trg_src.dtype, device=self.T_trg_src.device
         )
 
-        zeros = torch.zeros(N_init, 1, 3, dtype=self.T_trg_src.dtype, device=self.T_trg_src.device)
-        one = torch.ones(N_init, 1, 1, dtype=self.T_trg_src.dtype, device=self.T_trg_src.device)
+        zeros = torch.zeros(
+            N_init, 1, 3, dtype=self.T_trg_src.dtype, device=self.T_trg_src.device
+        )
+        one = torch.ones(
+            N_init, 1, 1, dtype=self.T_trg_src.dtype, device=self.T_trg_src.device
+        )
         r_0v_v = -C_v0s_init.bmm(r_v0s_init)
         trans_cols = torch.cat([r_0v_v, one], dim=1)
         rot_cols = torch.cat([C_v0s_init, zeros], dim=1)
@@ -285,8 +330,9 @@ class StereoLocalizationProblem:
         _, info_sdp, _ = self.certifier.solve_sdp(verbose=False)
         t_sdp_end = time.perf_counter()
         sdp_wall_time_s = t_sdp_end - t_sdp_start
-        sdp_solver_time_s = info_sdp[0].get("time", np.nan) if len(info_sdp) > 0 else np.nan
-        
+        sdp_solver_time_s = (
+            info_sdp[0].get("time", np.nan) if len(info_sdp) > 0 else np.nan
+        )
 
         C = self.certifier.Cs[0].detach().cpu().numpy()
         results = []
@@ -327,10 +373,14 @@ class StereoLocalizationProblem:
         local_mask = ~global_mask
 
         global_avg_cert_time = (
-            df.loc[global_mask, "certifier_time_s"].mean() if global_mask.any() else np.nan
+            df.loc[global_mask, "certifier_time_s"].mean()
+            if global_mask.any()
+            else np.nan
         )
         local_avg_cert_time = (
-            df.loc[local_mask, "certifier_time_s"].mean() if local_mask.any() else np.nan
+            df.loc[local_mask, "certifier_time_s"].mean()
+            if local_mask.any()
+            else np.nan
         )
 
         print(f"Average certifier time (global minima): {global_avg_cert_time:.6f} s")
@@ -352,10 +402,11 @@ class StereoLocalizationProblem:
                 f"All local minima costs > (global mean + std = {global_cost_threshold:.6e}): {all_local_greater}"
             )
         elif local_mask.any() and not global_mask.any():
-            print("Cannot compare local minima costs to global mean+std (no global minima found).")
+            print(
+                "Cannot compare local minima costs to global mean+std (no global minima found)."
+            )
         else:
             print("No local minima found to compare against global mean+std threshold.")
-        
 
         if plot_results:
             fig_cost, ax_cost = plt.subplots(figsize=(9, 4))
@@ -377,9 +428,26 @@ class StereoLocalizationProblem:
                 )
 
             if global_mask.any():
-                ax_cost.axhline(global_cost_mean, color="tab:green", linestyle="-", linewidth=1.5, label="global mean")
-                ax_cost.axhline(global_cost_mean + global_cost_std, color="tab:green", linestyle="--", linewidth=1.0, label="global mean ± std")
-                ax_cost.axhline(global_cost_mean - global_cost_std, color="tab:green", linestyle="--", linewidth=1.0)
+                ax_cost.axhline(
+                    global_cost_mean,
+                    color="tab:green",
+                    linestyle="-",
+                    linewidth=1.5,
+                    label="global mean",
+                )
+                ax_cost.axhline(
+                    global_cost_mean + global_cost_std,
+                    color="tab:green",
+                    linestyle="--",
+                    linewidth=1.0,
+                    label="global mean ± std",
+                )
+                ax_cost.axhline(
+                    global_cost_mean - global_cost_std,
+                    color="tab:green",
+                    linestyle="--",
+                    linewidth=1.0,
+                )
 
             ax_cost.set_xlabel("initialization index")
             ax_cost.set_ylabel("optimal cost")
@@ -398,40 +466,63 @@ class StereoLocalizationProblem:
             )
 
         return df
-    
-    def test_estimator_ground_truth(self):
-        # Test with ground truth initialization
-        T_trg_src = self.run_estimator(self.T_trg_src.cuda())
-        # Check that the difference is small
-        diff = se3_log(se3_inv(T_trg_src.cpu()).bmm(self.T_trg_src)).numpy()
-        np.testing.assert_allclose(diff, np.zeros((1, 6)), atol=1e-7)        
-        # Define perturbation
-        pert = 0.5
-        xi_pert = torch.tensor([[pert, pert, pert, pert, pert, pert]])
-        T_pert = se3_exp(xi_pert)
-        T_init = T_pert.bmm(self.T_trg_src)
-        # Test with perturbed starting point
-        T_trg_src = self.run_estimator(T_init.cuda())
-        # Check that the difference is small
-        diff = se3_log(se3_inv(T_trg_src.cpu()).bmm(self.T_trg_src)).numpy()
-        np.testing.assert_allclose(diff, np.zeros((1, 6)), atol=1e-8)
-        # check that the certifier sdp solve gets the same solution
-        X, info, T_trg_src_sdp = self.certifier.solve_sdp(verbose=True)
-        # Check that the difference is small
-        diff = se3_log(se3_inv(T_trg_src_sdp.cpu()).bmm(self.T_trg_src)).numpy()
-        np.testing.assert_allclose(diff, np.zeros((1, 6)), atol=1e-6)
-        # Run Certifier on SDP output
-        x_cand = self.certifier.transform_to_x(T_trg_src_sdp)
-        result = self.certifier.certify_solution(x_cand[0])
-        np.testing.assert_equal(result.certified, True)
-        # Test with output of solver
-        x_cand = self.certifier.transform_to_x(T_trg_src)
-        result = self.certifier.certify_solution(x_cand[0])
-        np.testing.assert_equal(result.certified, True)
-        
+
+
+def create_stereo_localization_problem(batch_size=1, N_map=50, device="cuda:0", seed=0):
+    set_seed(seed)
+    torch_device = torch.device(device)
+
+    r_v0s, C_v0s, r_ls = get_gt_setup(
+        N_map=N_map, N_batch=batch_size, traj_type="circle", n_turns=0.25
+    )
+    r_v0s = torch.tensor(r_v0s, device=torch_device)
+    C_v0s = torch.tensor(C_v0s, device=torch_device)
+    r_ls = torch.tensor(r_ls, device=torch_device)[None, :, :].expand(
+        batch_size, -1, -1
+    )
+
+    stereo_cam = StereoCameraModel(0.0, 0.0, 484.5, 0.24).to(torch_device)
+
+    pert = 0.0
+    xi_pert = torch.tensor([[pert, pert, pert, pert, pert, pert]], device=torch_device)
+    T_s_v = se3_exp(xi_pert)[0]
+
+    cam_coords_v = torch.bmm(C_v0s, r_ls - r_v0s)
+    cam_coords_v = torch.concat(
+        [cam_coords_v, torch.ones(batch_size, 1, r_ls.size(2), device=torch_device)],
+        dim=1,
+    )
+
+    src_coords_v = torch.concat(
+        [r_ls, torch.ones(batch_size, 1, r_ls.size(2), device=torch_device)], dim=1
+    )
+
+    cam_coords = T_s_v[None, :, :].bmm(cam_coords_v)
+    src_coords = T_s_v[None, :, :].bmm(src_coords_v)
+
+    zeros = torch.zeros(batch_size, 1, 3, device=torch_device).type_as(r_v0s)
+    one = torch.ones(batch_size, 1, 1, device=torch_device).type_as(r_v0s)
+    r_0v_v = -C_v0s.bmm(r_v0s)
+    trans_cols = torch.cat([r_0v_v, one], dim=1)
+    rot_cols = torch.cat([C_v0s, zeros], dim=1)
+    T_trg_src = torch.cat([rot_cols, trans_cols], dim=2)
+
+    weights = torch.ones(batch_size, 1, src_coords.size(2), device=torch_device)
+
+    stereo_loc = StereoLocalizationProblem(
+        keypoints_3D_src=src_coords,
+        keypoints_3D_trg=cam_coords,
+        weights=weights,
+        stereo_cam=stereo_cam,
+        T_s_v=T_s_v,
+    )
+    stereo_loc.T_trg_src = T_trg_src
+    return stereo_loc
+
+
 if __name__ == "__main__":
-    stereo_loc = StereoLocalizationProblem(batch_size=1, N_map=50)
+    stereo_loc = create_stereo_localization_problem(batch_size=1, N_map=50)
     # stereo_loc.certifier.check_constraint_linear_independence()
-    # stereo_loc.test_estimator_ground_truth()
-    df = stereo_loc.run_initializations_and_certify(N_init=100, plot_results=True, seed=0)
-    
+    df = stereo_loc.run_initializations_and_certify(
+        N_init=100, plot_results=True, seed=0
+    )
