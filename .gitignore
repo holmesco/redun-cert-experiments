@@ -5,3 +5,4 @@ results/
 *.pyc
 extern/mosek*
 uv.lock
+*settings.json*

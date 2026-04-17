@@ -1,13 +1,22 @@
 import time
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 
+from mat_weight_loc.stereo_loc import create_stereo_localization_problem
+
 
 def plot_targ_frames_3d(
-    stereo_loc, T_ests, is_global_min, T_inits=None, axis_scale=0.2, title=None
+    stereo_loc,
+    T_ests,
+    is_global_min,
+    T_inits=None,
+    axis_scale=0.2,
+    title=None,
+    save_path=None,
 ):
     """Plot target frames in 3D from estimated transforms.
 
@@ -175,6 +184,8 @@ def plot_targ_frames_3d(
     ax.scatter([], [], [], c=opt_local_color, s=40, label="optimized local")
     ax.legend(loc="best")
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
 
 
@@ -329,6 +340,9 @@ def run_inits_and_certify(
         print("No local minima found to compare against global mean+std threshold.")
 
     if plot_results:
+        results_dir = Path(__file__).resolve().parents[1] / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+
         fig_cost, ax_cost = plt.subplots(figsize=(9, 4))
         idx = df["init"].to_numpy()
         ax_cost.scatter(
@@ -375,6 +389,7 @@ def run_inits_and_certify(
         ax_cost.legend(loc="best")
         ax_cost.grid(alpha=0.25)
         plt.tight_layout()
+        fig_cost.savefig(results_dir / "mw_loc_cost.png", dpi=300, bbox_inches="tight")
 
         is_global_min = df["certified"].to_numpy(dtype=bool)
         plot_targ_frames_3d(
@@ -384,13 +399,13 @@ def run_inits_and_certify(
             T_inits=T_inits,
             axis_scale=plot_axis_scale,
             title="Initializations and optimized target frames",
+            save_path=results_dir / "mw_loc_geom.png",
         )
 
     return df
 
 
 if __name__ == "__main__":
-    from mat_weight_loc.stereo_loc import create_stereo_localization_problem
 
     stereo_loc = create_stereo_localization_problem(batch_size=1, N_map=50)
     # stereo_loc.certifier.check_constraint_linear_independence()

@@ -12,10 +12,6 @@ from utils.keypoint_tools import get_inv_cov_weights
 from utils.lie_algebra import se3_exp
 
 from mat_weight_loc.stereo_cert import StereoPoseCertifier
-from mat_weight_loc.stereo_loc_factor_graph import (
-    build_stereo_loc_fg,
-    solve_stereo_loc_fg,
-)
 
 
 def set_seed(x):
