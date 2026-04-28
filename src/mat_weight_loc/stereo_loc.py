@@ -10,7 +10,6 @@ from utils.stereo_utils import get_gt_setup
 from utils.keypoint_tools import get_inv_cov_weights
 from utils.lie_algebra import se3_exp
 
-from mat_weight_loc.stereo_cert import StereoPoseCertifier
 from mwcerts.cert_factor_graph import LocalizationFactorGraph
 from ranktools import (
     AnalyticCenter,
@@ -80,7 +79,8 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
             weights.shape == keypoints_3D_src.shape[1:]
         ), "weights should have shape (N_map,)"
         assert T_s_v.shape == (4, 4), "T_s_v should have shape (4, 4)"
-
+        self.keypoints_3D_src = keypoints_3D_src
+        self.keypoints_3D_trg = keypoints_3D_trg
         if T_s_v is None:
             T_s_v = np.eye(4)
         self.T_s_v = T_s_v
@@ -140,7 +140,10 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         result, time = self.optimize_graph(initial_values, verbose=verbose)
         # Extract solution
         T_est = result.atPose3(gtsam.Symbol("x", 0).key()).matrix()
-        return T_est, time
+        # Extract cost
+        cost = self.graph.error(result)
+        info = {"cost": cost, "time": time}
+        return T_est, info
 
     def certify_solution(self, T_est: np.ndarray, verbose=False):
 
@@ -166,7 +169,7 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         return result
 
 
-def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0):
+def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0)-> SinglePoseStereoLocalization:
     set_seed(seed)
     torch_device = torch.device(device)
     batch_size = 1

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from mat_weight_loc.stereo_loc import create_stereo_localization_problem
+from mat_weight_loc.stereo_loc import create_stereo_localization_problem, SinglePoseStereoLocalization
 
 
 def plot_targ_frames_3d(
@@ -145,20 +145,16 @@ def plot_targ_frames_3d(
         )
 
     # Plot source keypoints (3D map points)
-    if (
-        stereo_loc.keypoints_3D_src.ndim == 3
-        and stereo_loc.keypoints_3D_src.shape[1] >= 3
-    ):
-        keypoints_src = stereo_loc.keypoints_3D_src[0, :3, :].detach().cpu().numpy().T
-        ax.scatter(
-            keypoints_src[:, 0],
-            keypoints_src[:, 1],
-            keypoints_src[:, 2],
-            c="tab:blue",
-            s=12,
-            alpha=0.6,
-            label="keypoints_3D_src",
-        )
+    keypoints_src = stereo_loc.keypoints_3D_src[:3, :].T
+    ax.scatter(
+        keypoints_src[:, 0],
+        keypoints_src[:, 1],
+        keypoints_src[:, 2],
+        c="tab:blue",
+        s=12,
+        alpha=0.6,
+        label="keypoints_3D_src",
+    )
 
     if T_ests_np.shape[0] > 0:
         xyz = T_ests_np[:, :3, 3]
@@ -190,7 +186,7 @@ def plot_targ_frames_3d(
 
 
 def run_inits_and_certify(
-    stereo_loc, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2
+    stereo_loc:SinglePoseStereoLocalization, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2
 ):
     """Generate random initializations, run local optimization, and certify each result.
 
@@ -204,40 +200,34 @@ def run_inits_and_certify(
     Returns:
         pd.DataFrame: Per-run results including cost, certification status, and timing.
     """
-    if stereo_loc.batch_size != 1:
-        raise ValueError("run_inits_and_certify currently supports batch_size=1.")
     if stereo_loc.T_trg_src is None:
         raise ValueError(
             "T_trg_src is required for this analysis. "
             "Use create_stereo_localization_problem(...)."
         )
 
-    radius = torch.linalg.norm(stereo_loc.T_trg_src[0, :3, 3]).item()
+    radius = np.linalg.norm(stereo_loc.T_trg_src[:3, 3])
     r_v0s_init, C_v0s_init = stereo_loc.get_random_inits(
         radius=radius,
         N_batch=N_init,
         seed=seed,
     )
     r_v0s_init = torch.tensor(
-        r_v0s_init, dtype=stereo_loc.T_trg_src.dtype, device=stereo_loc.T_trg_src.device
+        r_v0s_init
     )
     C_v0s_init = torch.tensor(
-        C_v0s_init, dtype=stereo_loc.T_trg_src.dtype, device=stereo_loc.T_trg_src.device
+        C_v0s_init
     )
 
     zeros = torch.zeros(
         N_init,
         1,
         3,
-        dtype=stereo_loc.T_trg_src.dtype,
-        device=stereo_loc.T_trg_src.device,
     )
     one = torch.ones(
         N_init,
         1,
         1,
-        dtype=stereo_loc.T_trg_src.dtype,
-        device=stereo_loc.T_trg_src.device,
     )
     r_0v_v = -C_v0s_init.bmm(r_v0s_init)
     trans_cols = torch.cat([r_0v_v, one], dim=1)
@@ -245,40 +235,35 @@ def run_inits_and_certify(
     T_inits = torch.cat([rot_cols, trans_cols], dim=2)
 
     t_sdp_start = time.perf_counter()
-    _, info_sdp, _ = stereo_loc.certifier.solve_sdp(verbose=False)
+    _, info_sdp= stereo_loc.solve_sdp(verbose=False)
     t_sdp_end = time.perf_counter()
     sdp_wall_time_s = t_sdp_end - t_sdp_start
-    sdp_solver_time_s = info_sdp[0].get("time", np.nan) if len(info_sdp) > 0 else np.nan
+    sdp_solver_time_s = info_sdp.get("time", np.nan) 
 
-    C = stereo_loc.certifier.Cs[0].detach().cpu().numpy()
     results = []
     T_est_list = []
 
     for i in range(N_init):
-        T_init = T_inits[i : i + 1].to(stereo_loc.device)
-        T_est, runtime_gtsam = stereo_loc.solve_factor_graph(
-            T_init[0].cpu().numpy(), verbose=False
+        T_init = T_inits[i]
+        T_est, info_gtsam = stereo_loc.solve_factor_graph(
+            T_init.cpu().numpy(), verbose=False
         )
-        T_est = torch.from_numpy(T_est[None, :, :])
-        T_est_list.append(T_est.detach())
-        x_cand = stereo_loc.certifier.transform_to_x(T_est)[0].detach().cpu().numpy()
+        T_est_list.append(torch.from_numpy(T_est[None, :,:]))
 
-        optimal_cost = float((x_cand.T @ C @ x_cand).item())
-        cert_result = stereo_loc.certifier.certify_solution(
-            x_cand,
-            verbose=False,
-            cost=optimal_cost,
+        cert_result = stereo_loc.certify_solution(
+            T_est,
+            verbose=False, 
         )
 
         results.append(
             {
                 "init": i,
-                "optimal_cost": optimal_cost,
+                "optimal_cost": info_gtsam["cost"],
                 "certified": bool(cert_result.certified),
                 "min_eig": float(cert_result.min_eig),
                 "complementarity": float(cert_result.complementarity),
                 "certifier_time_s": float(cert_result.solver_time),
-                "gtsam_time_s": float(runtime_gtsam),
+                "gtsam_time_s": float(info_gtsam["time"]),
             }
         )
 
@@ -407,6 +392,5 @@ def run_inits_and_certify(
 
 if __name__ == "__main__":
 
-    stereo_loc = create_stereo_localization_problem(batch_size=1, N_map=50)
-    # stereo_loc.certifier.check_constraint_linear_independence()
+    stereo_loc = create_stereo_localization_problem(N_map=50)
     df = run_inits_and_certify(stereo_loc, N_init=100, plot_results=True, seed=0)
