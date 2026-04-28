@@ -5,13 +5,43 @@ import time
 import gtsam
 from gtsam.symbol_shorthand import X, S, T
 
-
 from utils.stereo_camera_model import StereoCameraModel
 from utils.stereo_utils import get_gt_setup
 from utils.keypoint_tools import get_inv_cov_weights
 from utils.lie_algebra import se3_exp
 
 from mat_weight_loc.stereo_cert import StereoPoseCertifier
+from mwcerts.cert_factor_graph import LocalizationFactorGraph
+from ranktools import (
+    AnalyticCenter,
+    AnalyticCenterParams,
+    LinearSolverType,
+    LowRankPrecondMethod,
+)
+
+
+def get_default_cert_params():
+    params = AnalyticCenterParams()
+    params.verbose = True
+    params.lin_solver = LinearSolverType.MFCG_LRP
+    params.lin_solve_max_iter = 200
+    params.lin_solve_tol = 1e-4
+    params.delta_init = 1e-5
+    params.rescale_lin_sys = False
+    params.max_iter = 20
+    # Early stopping local
+    params.early_stop_angle = True
+    params.max_angle = 1e-3
+    # Preconditioner parameters
+    params.lrp_params.tau = 1e-4
+    params.lrp_params.method = LowRankPrecondMethod.SparseLDLT
+    # Turn off perturbations:
+    params.delta_min = 1e-8
+    params.perturb_constraints = False
+    params.perturb_cost = False
+    params.adaptive_perturb = False
+    params.cost_perturb = 1e-6
+    return params
 
 
 def set_seed(x):
@@ -24,128 +54,55 @@ torch.set_default_dtype(torch.float64)
 torch.autograd.set_detect_anomaly(True)
 
 
-class MatWeightLocResidual:
-    """Stack landmark errors for a single Pose3 variable."""
-
-    def __init__(self, keypoint_src, keypoint_trg: list[np.ndarray]):
-        self.keypoint_src = keypoint_src
-        self.keypoint_trg = keypoint_trg
-
-    def __call__(
+class SinglePoseStereoLocalization(LocalizationFactorGraph):
+    def __init__(
         self,
-        this: gtsam.CustomFactor,
-        values: gtsam.Values,
-        jacobians: list[np.ndarray] | None,
-    ) -> np.ndarray:
-        pose = values.atPose3(this.keys()[0])
-        residual = np.zeros(3)
+        keypoints_3D_src: np.ndarray,
+        keypoints_3D_trg: np.ndarray,
+        weights: np.ndarray,
+        inv_cov_weights: np.ndarray,
+        T_s_v: np.ndarray | None = None,
+        params: AnalyticCenterParams | None = None,
+    ):
 
-        if jacobians is not None:
-            jacobians[0] = np.zeros((3, 6), order="F")
+        super().__init__()
 
-        if jacobians is not None:
-            H_pose = np.zeros((3, 6), order="F")
-            H_point = np.zeros((3, 3), order="F")
-            keypoint_trg_pred = pose.transformFrom(self.keypoint_src, H_pose, H_point)
-            jacobians[0] = H_pose
-        else:
-            keypoint_trg_pred = pose.transformFrom(self.keypoint_src)
+        assert (
+            len(keypoints_3D_src.shape) == 2
+        ), "keypoints_3D_src should have shape (3, N_map)"
+        assert (
+            len(keypoints_3D_trg.shape) == 2
+        ), "keypoints_3D_trg should have shape (3, N_map)"
+        assert (
+            keypoints_3D_src.shape[1] == keypoints_3D_trg.shape[1]
+        ), "keypoints_3D_src and keypoints_3D_trg should have the same shape"
+        assert (
+            weights.shape == keypoints_3D_src.shape[1:]
+        ), "weights should have shape (N_map,)"
+        assert T_s_v.shape == (4, 4), "T_s_v should have shape (4, 4)"
 
-        residual = keypoint_trg_pred - self.keypoint_trg
-
-        return residual
-
-
-def build_stereo_loc_fg(keypoint_3D_src, keypoint_3D_trg, weight, inv_cov_weight=None):
-
-    n_points = keypoint_3D_src.shape[1]
-    # create expression leaf for pose variable
-    T_trg_src_key = X(0)
-    # Create factor graph
-    graph = gtsam.NonlinearFactorGraph()
-    # Loop through points and add factors
-    for i in range(n_points):
-        # Extract the i-th keypoint from source and target
-        src_point = keypoint_3D_src[:3, i]
-        trg_point = keypoint_3D_trg[:3, i]
-
-        # Get the noise model for this landmark
-        if inv_cov_weight is not None:
-            # Use the inverse covariance weight to create a noise model
-            noise_model = gtsam.noiseModel.Gaussian.Information(
-                inv_cov_weight[i] * weight[i]
-            )
-        else:
-            # Use the weight to create a noise model (assuming isotropic noise)
-            noise_model = gtsam.noiseModel.Isotropic.Sigma(3, 1.0 / weight)
-
-        # Add a factor between the source and target keypoints using the pose variable
-        factor = gtsam.CustomFactor(
-            noise_model, [T_trg_src_key], MatWeightLocResidual(src_point, trg_point)
-        )
-        graph.add(factor)
-    return graph
-
-
-def solve_stereo_loc_fg(graph, T_init, verbose=False):
-    # Create initial values
-    values = gtsam.Values()
-    values.insert(X(0), gtsam.Pose3(T_init))
-    # Create optimizer
-    opt_params = gtsam.LevenbergMarquardtParams()
-    if verbose:
-        opt_params.setVerbosityLM("SUMMARY")
-    else:
-        opt_params.setVerbosityLM("SILENT")
-
-    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, opt_params)
-    # Optimize
-    start_time = time.perf_counter()
-    result = optimizer.optimize()
-    runtime_s = time.perf_counter() - start_time
-    optimized_pose = result.atPose3(X(0)).matrix()
-    if verbose:
-        print(f"Optimization runtime: {runtime_s:.6f} s")
-        print("Optimization result:\n", optimized_pose)
-
-    return optimized_pose, runtime_s
-
-
-class StereoLocalizationProblem:
-    def __init__(self, keypoints_3D_src, keypoints_3D_trg, weights, stereo_cam, T_s_v):
-
-        self.keypoints_3D_src = keypoints_3D_src
-        self.keypoints_3D_trg = keypoints_3D_trg
-        self.weights = weights
+        if T_s_v is None:
+            T_s_v = np.eye(4)
         self.T_s_v = T_s_v
-        self.stereo_cam = stereo_cam
-
-        self.batch_size = self.keypoints_3D_src.size(0)
-        self.N_map = self.keypoints_3D_src.size(2)
-        self.device = self.keypoints_3D_src.device
+        self.N_map = keypoints_3D_src.shape[1]
         self.T_trg_src = None
 
-        # Get inverse covariance weights
-        # Get matrix weights - assuming 0.5 pixel std dev
-        valid = self.weights > 0
-        self.inv_cov_weights, cov = get_inv_cov_weights(
-            self.keypoints_3D_trg, valid, self.stereo_cam
+        # Add factors for keypoints
+        self.add_fixed_keypoint_factors(
+            pose_id=gtsam.Symbol("x", 0),
+            keypoints_3D_src=keypoints_3D_src,
+            keypoints_3D_trg=keypoints_3D_trg,
+            weights=inv_cov_weights,
         )
-        # Intialize certifier class
-        self.certifier = StereoPoseCertifier(
-            self.T_s_v,
-            self.keypoints_3D_src,
-            self.keypoints_3D_trg,
-            self.weights,
-            self.inv_cov_weights,
-        )
-        # Build factor graph
-        self.factor_graph = build_stereo_loc_fg(
-            self.keypoints_3D_src[0].cpu().numpy(),
-            self.keypoints_3D_trg[0].cpu().numpy(),
-            self.weights[0][0].cpu().numpy(),
-            self.inv_cov_weights[0].cpu().numpy(),
-        )
+        
+        # Add constraints
+        self.add_constraints()
+
+        # Certifier Parameters
+        if params is None:
+            self.cert_params = get_default_cert_params()
+        else:
+            self.cert_params = params
 
     def get_random_inits(self, radius, N_batch=10, seed=0):
         """Generate random pose initializations similar to stereo_cal.get_random_inits."""
@@ -172,16 +129,47 @@ class StereoLocalizationProblem:
 
         return r_v0s, C_v0s
 
-    def solve_factor_graph(self, T_init, verbose=False):
-        T_est, runtime = solve_stereo_loc_fg(self.factor_graph, T_init, verbose=verbose)
+    def solve_factor_graph(self, T_init: np.ndarray, verbose:bool=False):
+        """Solve the factor graph optimization problem starting from T_init."""
+        # Build initial values
+        initial_values = gtsam.Values()
+        initial_values.insert(
+            X(0), gtsam.Pose3(gtsam.Rot3(T_init[:3, :3]), gtsam.Point3(T_init[:3, 3]))
+        )
+        # Run optimization
+        result, time = self.optimize_graph(initial_values, verbose=verbose)
+        # Extract solution
+        T_est = result.atPose3(gtsam.Symbol("x", 0).key()).matrix()
+        return T_est, time
 
-        return T_est, runtime
+    def certify_solution(self, T_est: np.ndarray, verbose=False):
+
+        # Get the vector version of the solution
+        values = gtsam.Values()
+        values.insert(
+            gtsam.Symbol("x", 0).key(),
+            gtsam.Pose3(gtsam.Rot3(T_est[:3, :3]), gtsam.Point3(T_est[:3, 3])),
+        )
+        x_cand = self.vector_from_values(values)
+        # Get the cost and constraint matrices
+        var_dict = self.get_variable_dict(use_cached=False)
+        C = self.get_sdp_cost(var_dict)
+        As, bs = self.get_sdp_constraints(var_dict)
+        # Optimal cost
+        rho = (x_cand.T @ C @ x_cand).item()
+        # verbose option
+        if verbose:
+            self.cert_params.verbose = True
+        # Run certifier
+        certifier = AnalyticCenter(C, rho, As, bs, self.cert_params)
+        result = certifier.certify(x_cand)
+        return result
 
 
-def create_stereo_localization_problem(batch_size=1, N_map=50, device="cuda:0", seed=0):
+def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0):
     set_seed(seed)
     torch_device = torch.device(device)
-
+    batch_size = 1
     r_v0s, C_v0s, r_ls = get_gt_setup(
         N_map=N_map, N_batch=batch_size, traj_type="circle", n_turns=0.25
     )
@@ -219,12 +207,25 @@ def create_stereo_localization_problem(batch_size=1, N_map=50, device="cuda:0", 
 
     weights = torch.ones(batch_size, 1, src_coords.size(2), device=torch_device)
 
-    stereo_loc = StereoLocalizationProblem(
-        keypoints_3D_src=src_coords,
-        keypoints_3D_trg=cam_coords,
-        weights=weights,
-        stereo_cam=stereo_cam,
+    valid = weights > 0
+    inv_cov_weights, _ = get_inv_cov_weights(cam_coords, valid, stereo_cam)
+    # convert to list
+    inv_cov_weights = [
+        inv_cov_weights[0, i, :, :].cpu().numpy()
+        for i in range(inv_cov_weights.size(1))
+    ]
+
+    stereo_loc = SinglePoseStereoLocalization(
+        keypoints_3D_src=src_coords[0, :3, :].cpu().numpy(),
+        keypoints_3D_trg=cam_coords[0, :3, :].cpu().numpy(),
+        weights=weights[0, 0, :].cpu().numpy(),
+        inv_cov_weights=inv_cov_weights,
         T_s_v=T_s_v,
     )
-    stereo_loc.T_trg_src = T_trg_src
+    # Store actual pose
+    stereo_loc.T_trg_src = T_trg_src[0].cpu().numpy()
     return stereo_loc
+
+
+if __name__ == "__main__":
+    stereo_loc = create_stereo_localization_problem()

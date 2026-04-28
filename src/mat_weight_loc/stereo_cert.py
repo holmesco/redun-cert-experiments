@@ -80,7 +80,6 @@ class StereoPoseCertifier():
         if params is None:
             self.params = AnalyticCenterParams()
             self.params.verbose = True
-            self.params.verbose = True
             self.params.lin_solver = LinearSolverType.MFCG_LRP
             self.params.lin_solve_max_iter = 200
             self.params.lin_solve_tol = 1e-4
@@ -96,6 +95,7 @@ class StereoPoseCertifier():
             # Turn off perturbations:
             self.params.delta_min = 1e-8
             self.params.perturb_constraints = False
+            self.params.perturb_cost = False
             self.params.adaptive_perturb = False
             self.params.cost_perturb = 1e-6
         else:
@@ -218,7 +218,7 @@ class StereoPoseCertifier():
         This method vectorizes each constraint matrix ``A_i`` into ``vec(A_i)``,
         stacks these vectors into a matrix
 
-            V = [vec(A_1), ..., vec(A_m)]^T  \in R^{m x n^2},
+            #V = [vec(A_1), ..., vec(A_m)]^T  \in R^{m x n^2},
 
         and computes a rank-revealing QR decomposition with column pivoting on
         ``V^T`` to determine the rank and identify independent constraints.
@@ -326,6 +326,7 @@ class StereoPoseCertifier():
         B = keypoints_3D_src.shape[0]  # Batch dimension
         N = keypoints_3D_src.shape[2]  # Number of points
         device = keypoints_3D_src.device  # Get device
+        dtype = keypoints_3D_trg.dtype
         # Indices
         h = 0
         c = slice(1, 10)
@@ -333,14 +334,14 @@ class StereoPoseCertifier():
         # relabel and dehomogenize
         m = keypoints_3D_src[:, :3, :]
         y = keypoints_3D_trg[:, :3, :]
-        Q_n = torch.zeros(B, N, 13, 13).to(device)
+        Q_n = torch.zeros(B, N, 13, 13, device=device, dtype=dtype)
         # world frame keypoint vector outer product
         M = torch.einsum("bin,bjn->bnij", m, m)  # BxNx3x3
         if inv_cov_weights is not None:
             W = inv_cov_weights  # BxNx3x3
         else:
             # Weight with identity if no weights are provided
-            W = torch.eye(3, 3).to(device).expand(B, N, -1, -1) / N
+            W = torch.eye(3, 3, device=device, dtype=dtype).expand(B, N, -1, -1) / N
         # diagonal elements
         Q_n[:, :, c, c] = kron(M, W)  # BxNx9x9
         Q_n[:, :, t, t] = W  # BxNx3x3
@@ -361,12 +362,13 @@ class StereoPoseCertifier():
         # remove constant offset
         if scale_offset:
             offsets = Q[:, 0, 0].clone()
-            Q[:, 0, 0] = torch.zeros(B).to(device)
+            Q[:, 0, 0] = torch.zeros(B, device=device, dtype=dtype)
             # rescale
             scales = torch.linalg.norm(Q, ord="fro", dim=(1, 2))
             Q = Q / scales[:, None, None]
         else:
-            scales, offsets = torch.ones(B), torch.zeros(B)
+            scales = torch.ones(B, device=device, dtype=dtype)
+            offsets = torch.zeros(B, device=device, dtype=dtype)
         return Q, scales, offsets
 
     def get_obj_matrix(

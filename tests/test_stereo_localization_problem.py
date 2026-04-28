@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 import torch
 
-from mat_weight_loc.stereo_loc import create_stereo_localization_problem
+import gtsam
+
+from mat_weight_loc.stereo_loc import (
+    create_stereo_localization_problem,
+    SinglePoseStereoLocalization,
+)
 from utils.lie_algebra import se3_exp, se3_inv, se3_log
 
 
@@ -23,14 +28,15 @@ def _assert_pose_close(T_est: torch.Tensor, T_ref: torch.Tensor, atol: float) ->
 @pytest.fixture(scope="module")
 def stereo_problem():
     return create_stereo_localization_problem(
-        batch_size=1,
         N_map=50,
-        device=_default_device(),
         seed=0,
     )
 
+
 class TestFactorGraphOptimization:
-    def test_converges_from_ground_truth_initialization(self, stereo_problem):
+    def test_converges_from_ground_truth_initialization(
+        self, stereo_problem: SinglePoseStereoLocalization
+    ):
         T_est, _ = stereo_problem.solve_factor_graph(
             stereo_problem.T_trg_src[0].cpu().numpy(),
             verbose=True,
@@ -38,7 +44,9 @@ class TestFactorGraphOptimization:
         T_est = torch.from_numpy(T_est[None, :, :])
         _assert_pose_close(T_est, stereo_problem.T_trg_src, atol=1e-7)
 
-    def test_converges_from_perturbed_initialization(self, stereo_problem):
+    def test_converges_from_perturbed_initialization(
+        self, stereo_problem: SinglePoseStereoLocalization
+    ):
         pert = 0.5
         xi_pert = torch.tensor(
             [[pert, pert, pert, pert, pert, pert]],
@@ -57,22 +65,39 @@ class TestFactorGraphOptimization:
 
 
 class TestCertification:
-    def test_sdp_solution_matches_ground_truth_and_is_certified(self, stereo_problem):
-        _, _, T_trg_src_sdp = stereo_problem.certifier.solve_sdp(verbose=False)
-
-        _assert_pose_close(T_trg_src_sdp, stereo_problem.T_trg_src, atol=1e-6)
-
-        x_cand = stereo_problem.certifier.transform_to_x(T_trg_src_sdp)
-        result = stereo_problem.certifier.certify_solution(x_cand[0])
+    def test_sdp_solution(self, stereo_problem: SinglePoseStereoLocalization):
+        # Solve SDP
+        X, _ = stereo_problem.solve_sdp(verbose=True)
+        # Check rank-1 solution
+        eigenvalues = np.linalg.eigvalsh(X)
+        eigenvalues = np.sort(eigenvalues)[::-1]
+        assert (
+            eigenvalues[0] / eigenvalues[1] > 1e6
+        ), f"Eigenvalue ratio: {eigenvalues[0] / eigenvalues[1]}"
+        # Check that solution is close to ground truth
+        values = stereo_problem.values_from_vector(X[:, 0])
+        key = gtsam.Symbol("x", 0).key()
+        T_trg_src_sdp = values.atPose3(key)
+        T_trg_src_gt = gtsam.Pose3(stereo_problem.T_trg_src)
+        err = T_trg_src_sdp.logmap(T_trg_src_gt)
+        assert (
+            np.linalg.norm(err) < 1e-6
+        ), f"SDP solution not close to ground truth: {err}"
+        print(f"SDP solution close to ground truth: {np.linalg.norm(err)}")
+        result = stereo_problem.certify_solution(T_trg_src_sdp.matrix(), verbose=True)
         assert bool(result.certified)
 
-    def test_factor_graph_solution_is_certified(self, stereo_problem):
+    def test_factor_graph_solution(self, stereo_problem: SinglePoseStereoLocalization):
         T_est, _ = stereo_problem.solve_factor_graph(
-            stereo_problem.T_trg_src[0].cpu().numpy(),
+            stereo_problem.T_trg_src,
             verbose=False,
         )
-        T_est = torch.from_numpy(T_est[None, :, :])
-        x_cand = stereo_problem.certifier.transform_to_x(T_est)
-        x_cand = x_cand.detach().cpu().numpy()
-        result = stereo_problem.certifier.certify_solution(x_cand[0])
+        T_trg_est = gtsam.Pose3(T_est)
+        T_trg_src_gt = gtsam.Pose3(stereo_problem.T_trg_src)
+        err = T_trg_est.logmap(T_trg_src_gt)
+        assert (
+            np.linalg.norm(err) < 1e-6
+        ), f"SDP solution not close to ground truth: {err}"
+        print(f"SDP solution close to ground truth: {np.linalg.norm(err)}")
+        result = stereo_problem.certify_solution(T_trg_est.matrix(), verbose=True)
         assert bool(result.certified)
