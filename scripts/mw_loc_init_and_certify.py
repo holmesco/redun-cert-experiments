@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from mat_weight_loc.stereo_loc import (
+from mat_weight_loc.one_pose_stereo_loc import (
     sim_single_pose_localization,
     SinglePoseStereoLocalization,
     get_random_inits,
@@ -254,7 +254,7 @@ def run_inits_and_certify(
         )
         T_est_list.append(torch.from_numpy(T_est[None, :, :]))
 
-        cert_result = stereo_loc.certify_solution(
+        cert_result = stereo_loc.certify_single_pose_solution(
             T_est,
             verbose=False,
         )

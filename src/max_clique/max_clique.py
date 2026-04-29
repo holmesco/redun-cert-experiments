@@ -138,10 +138,10 @@ class MaxCliqueProblem:
             self.params.lin_solve_max_iter = 200
             self.params.lin_solve_tol = 1e-5
             self.params.lrp_params.tau = 1e-5
-            self.params.delta_init = 1e-5
-            self.params.delta_min = 1e-8
+            self.params.delta = 1e-5
+            self.params.eps_cost = 1e-5
+            self.params.eps_mult_min = 1e-8
             self.params.rescale_lin_sys = False
-            # Turn off perturbations:
             self.params.perturb_constraints = False
             self.params.perturb_cost = True
             self.params.adaptive_perturb = True
@@ -150,7 +150,6 @@ class MaxCliqueProblem:
             self.params.early_stop_cert = True
             self.params.max_angle = 1e-3
             self.params.max_iter = 20
-            self.params.cost_perturb = 1e-5
 
 
     def get_constraints(self):
