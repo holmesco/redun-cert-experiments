@@ -19,30 +19,6 @@ from ranktools import (
 )
 
 
-def get_default_cert_params():
-    params = AnalyticCenterParams()
-    params.verbose = True
-    params.lin_solver = LinearSolverType.MFCG_LRP
-    params.lin_solve_max_iter = 200
-    params.lin_solve_tol = 1e-4
-    params.delta_init = 1e-5
-    params.rescale_lin_sys = False
-    params.max_iter = 20
-    # Early stopping local
-    params.early_stop_angle = True
-    params.max_angle = 1e-3
-    # Preconditioner parameters
-    params.lrp_params.tau = 1e-4
-    params.lrp_params.method = LowRankPrecondMethod.SparseLDLT
-    # Turn off perturbations:
-    params.delta_min = 1e-8
-    params.perturb_constraints = False
-    params.perturb_cost = False
-    params.adaptive_perturb = False
-    params.cost_perturb = 1e-6
-    return params
-
-
 def set_seed(x):
     np.random.seed(x)
     torch.manual_seed(x)
@@ -98,12 +74,7 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         # Add constraints
         self.add_constraints()
 
-        # Certifier Parameters
-        if params is None:
-            self.cert_params = get_default_cert_params()
-        else:
-            self.cert_params = params
-
+        
     def solve_factor_graph(self, T_init: np.ndarray, verbose: bool = False):
         """Solve the factor graph optimization problem starting from T_init."""
         # Build initial values
@@ -120,37 +91,20 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         info = {"cost": cost, "time": time}
         return T_est, info
 
-    # TODO: This function should be moved to the parent class. Nothing here that need be specific to the one pose localization
-    def certify_solution(self, T_est: np.ndarray, verbose=False, adjust_cost=True):
-        # Get the vector version of the solution
+
+    def certify_single_pose_solution(self, T_est: np.ndarray, verbose=False, adjust_cost=True):
+        """Certify a single pose solution."""
         values = gtsam.Values()
         values.insert(
             gtsam.Symbol("x", 0).key(),
             gtsam.Pose3(gtsam.Rot3(T_est[:3, :3]), gtsam.Point3(T_est[:3, 3])),
         )
-        x_cand = self.vector_from_values(values)
-        # Get the cost and constraint matrices
-        var_dict = self.get_variable_dict(use_cached=False)
-        C = self.get_sdp_cost(var_dict)
-        As, bs = self.get_sdp_constraints(var_dict)
-        # Adjust C matrix
-        if adjust_cost:
-            assert (
-                next(iter(var_dict)) == self.homog
-            ), "First key of dictionary must be homogenization variable"
-            C[0, 0] = 0
-            C /= np.linalg.norm(C)
-        # Optimal cost
-        rho = (x_cand.T @ C @ x_cand).item()
-        # verbose option
-        if verbose:
-            self.cert_params.verbose = True
-        # Run certifier
-        certifier = AnalyticCenter(C, rho, As, bs, self.cert_params)
-        result = certifier.certify(x_cand)
-        return result
-
-
+        cert_result = self.certify_solution(
+            values, verbose=verbose, adjust_cost=adjust_cost
+        )
+        return cert_result
+    
+    
 def sim_single_pose_localization(
     N_map: int = 50,
     device: str = "cpu",

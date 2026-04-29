@@ -4,7 +4,7 @@ import torch
 
 import gtsam
 
-from mat_weight_loc.stereo_loc import (
+from mat_weight_loc.one_pose_stereo_loc import (
     sim_single_pose_localization,
     SinglePoseStereoLocalization,
 )
