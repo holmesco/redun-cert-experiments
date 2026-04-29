@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import torch
 
-from mat_weight_loc.stereo_loc import create_stereo_localization_problem, SinglePoseStereoLocalization
+from mat_weight_loc.stereo_loc import (
+    sim_single_pose_localization,
+    SinglePoseStereoLocalization,
+    get_random_inits,
+)
 
 
 def plot_targ_frames_3d(
@@ -186,7 +190,11 @@ def plot_targ_frames_3d(
 
 
 def run_inits_and_certify(
-    stereo_loc:SinglePoseStereoLocalization, N_init=10, seed=0, plot_results=False, plot_axis_scale=0.2
+    stereo_loc: SinglePoseStereoLocalization,
+    N_init=10,
+    seed=0,
+    plot_results=False,
+    plot_axis_scale=0.2,
 ):
     """Generate random initializations, run local optimization, and certify each result.
 
@@ -207,17 +215,13 @@ def run_inits_and_certify(
         )
 
     radius = np.linalg.norm(stereo_loc.T_trg_src[:3, 3])
-    r_v0s_init, C_v0s_init = stereo_loc.get_random_inits(
+    r_v0s_init, C_v0s_init = get_random_inits(
         radius=radius,
         N_batch=N_init,
         seed=seed,
     )
-    r_v0s_init = torch.tensor(
-        r_v0s_init
-    )
-    C_v0s_init = torch.tensor(
-        C_v0s_init
-    )
+    r_v0s_init = torch.tensor(r_v0s_init)
+    C_v0s_init = torch.tensor(C_v0s_init)
 
     zeros = torch.zeros(
         N_init,
@@ -235,10 +239,10 @@ def run_inits_and_certify(
     T_inits = torch.cat([rot_cols, trans_cols], dim=2)
 
     t_sdp_start = time.perf_counter()
-    _, info_sdp= stereo_loc.solve_sdp(verbose=False)
+    _, info_sdp = stereo_loc.solve_sdp(verbose=False)
     t_sdp_end = time.perf_counter()
     sdp_wall_time_s = t_sdp_end - t_sdp_start
-    sdp_solver_time_s = info_sdp.get("time", np.nan) 
+    sdp_solver_time_s = info_sdp.get("time", np.nan)
 
     results = []
     T_est_list = []
@@ -246,13 +250,13 @@ def run_inits_and_certify(
     for i in range(N_init):
         T_init = T_inits[i]
         T_est, info_gtsam = stereo_loc.solve_factor_graph(
-            T_init.cpu().numpy(), verbose=False
+            T_init.cpu().numpy(), verbose=True
         )
-        T_est_list.append(torch.from_numpy(T_est[None, :,:]))
+        T_est_list.append(torch.from_numpy(T_est[None, :, :]))
 
         cert_result = stereo_loc.certify_solution(
             T_est,
-            verbose=False, 
+            verbose=False,
         )
 
         results.append(
@@ -325,7 +329,7 @@ def run_inits_and_certify(
         print("No local minima found to compare against global mean+std threshold.")
 
     if plot_results:
-        results_dir = Path(__file__).resolve().parents[1] / "results"
+        results_dir = Path(__file__).resolve().parents[1] / "results/single_pose_loc"
         results_dir.mkdir(parents=True, exist_ok=True)
 
         fig_cost, ax_cost = plt.subplots(figsize=(9, 4))
@@ -370,6 +374,7 @@ def run_inits_and_certify(
 
         ax_cost.set_xlabel("initialization index")
         ax_cost.set_ylabel("optimal cost")
+        ax_cost.set_yscale("log")
         ax_cost.set_title("Cost by trial with global mean/std")
         ax_cost.legend(loc="best")
         ax_cost.grid(alpha=0.25)
@@ -391,6 +396,5 @@ def run_inits_and_certify(
 
 
 if __name__ == "__main__":
-
-    stereo_loc = create_stereo_localization_problem(N_map=50)
+    stereo_loc = sim_single_pose_localization(N_map=100, pixel_noise=0.5, normalize_weights=True)
     df = run_inits_and_certify(stereo_loc, N_init=100, plot_results=True, seed=0)

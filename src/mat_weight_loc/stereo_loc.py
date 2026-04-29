@@ -94,7 +94,7 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
             keypoints_3D_trg=keypoints_3D_trg,
             weights=inv_cov_weights,
         )
-        
+
         # Add constraints
         self.add_constraints()
 
@@ -104,32 +104,7 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         else:
             self.cert_params = params
 
-    def get_random_inits(self, radius, N_batch=10, seed=0):
-        """Generate random pose initializations similar to stereo_cal.get_random_inits."""
-        set_seed(seed)
-        r_v0s = []
-        C_v0s = []
-
-        for _ in range(N_batch):
-            # random locations on sphere
-            r_ = np.random.random((3, 1)) - 0.5
-            r = radius * r_ / np.linalg.norm(r_)
-            r_v0s += [r]
-
-            # random orientation pointing at origin
-            z = -r / np.linalg.norm(r)
-            y = np.random.randn(3, 1)
-            y = y - y.T @ z * z
-            y = y / np.linalg.norm(y)
-            x = np.cross(y[:, 0], z[:, 0])[:, None]
-            C_v0s += [np.hstack([x, y, z]).T]
-
-        r_v0s = np.stack(r_v0s)
-        C_v0s = np.stack(C_v0s)
-
-        return r_v0s, C_v0s
-
-    def solve_factor_graph(self, T_init: np.ndarray, verbose:bool=False):
+    def solve_factor_graph(self, T_init: np.ndarray, verbose: bool = False):
         """Solve the factor graph optimization problem starting from T_init."""
         # Build initial values
         initial_values = gtsam.Values()
@@ -145,8 +120,8 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         info = {"cost": cost, "time": time}
         return T_est, info
 
-    def certify_solution(self, T_est: np.ndarray, verbose=False):
-
+    # TODO: This function should be moved to the parent class. Nothing here that need be specific to the one pose localization
+    def certify_solution(self, T_est: np.ndarray, verbose=False, adjust_cost=True):
         # Get the vector version of the solution
         values = gtsam.Values()
         values.insert(
@@ -158,6 +133,13 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         var_dict = self.get_variable_dict(use_cached=False)
         C = self.get_sdp_cost(var_dict)
         As, bs = self.get_sdp_constraints(var_dict)
+        # Adjust C matrix
+        if adjust_cost:
+            assert (
+                next(iter(var_dict)) == self.homog
+            ), "First key of dictionary must be homogenization variable"
+            C[0, 0] = 0
+            C /= np.linalg.norm(C)
         # Optimal cost
         rho = (x_cand.T @ C @ x_cand).item()
         # verbose option
@@ -169,7 +151,13 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         return result
 
 
-def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0)-> SinglePoseStereoLocalization:
+def sim_single_pose_localization(
+    N_map: int = 50,
+    device: str = "cpu",
+    seed: int = 0,
+    pixel_noise: float = 0.0,
+    normalize_weights: bool = True,
+) -> SinglePoseStereoLocalization:
     set_seed(seed)
     torch_device = torch.device(device)
     batch_size = 1
@@ -181,9 +169,10 @@ def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0)-> Sin
     r_ls = torch.tensor(r_ls, device=torch_device)[None, :, :].expand(
         batch_size, -1, -1
     )
+    # Set up stereo model
+    stereo_cam = StereoCameraModel(0.0, 0.0, 484.5, 0.24, pixel_noise).to(torch_device)
 
-    stereo_cam = StereoCameraModel(0.0, 0.0, 484.5, 0.24).to(torch_device)
-
+    # vehicle to sensor transform
     pert = 0.0
     xi_pert = torch.tensor([[pert, pert, pert, pert, pert, pert]], device=torch_device)
     T_s_v = se3_exp(xi_pert)[0]
@@ -209,14 +198,24 @@ def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0)-> Sin
     T_trg_src = torch.cat([rot_cols, trans_cols], dim=2)
 
     weights = torch.ones(batch_size, 1, src_coords.size(2), device=torch_device)
-
-    valid = weights > 0
-    inv_cov_weights, _ = get_inv_cov_weights(cam_coords, valid, stereo_cam)
-    # convert to list
-    inv_cov_weights = [
-        inv_cov_weights[0, i, :, :].cpu().numpy()
-        for i in range(inv_cov_weights.size(1))
-    ]
+    if pixel_noise > 0.0:
+        valid = weights > 0
+        inv_cov_weights, cov_cam = get_inv_cov_weights(
+            cam_coords, valid, stereo_cam, normalize_weights=normalize_weights
+        )
+        # convert to list
+        inv_cov_weights = [
+            inv_cov_weights[0, i, :, :].cpu().numpy()
+            for i in range(inv_cov_weights.size(1))
+        ]
+    else:
+        inv_cov_weights = [np.eye(3) for _ in range(src_coords.size(2))]
+    # If pixel noise is actually enabled
+    if pixel_noise:
+        noise = torch.randn((cam_coords.size(2), 3, 1))
+        L = torch.linalg.cholesky(cov_cam[0])
+        noise_clr = L.bmm(noise).squeeze(2).T
+        cam_coords[0, :3, :] = cam_coords[0, :3, :] + noise_clr
 
     stereo_loc = SinglePoseStereoLocalization(
         keypoints_3D_src=src_coords[0, :3, :].cpu().numpy(),
@@ -230,5 +229,36 @@ def create_stereo_localization_problem(N_map:int=50, device="cpu", seed=0)-> Sin
     return stereo_loc
 
 
+def get_random_inits(radius, N_batch=10, seed=0, pointing_at_origin=True):
+    """Generate random pose initializations similar to stereo_cal.get_random_inits."""
+    set_seed(seed)
+    r_v0s = []
+    C_v0s = []
+
+    for _ in range(N_batch):
+        # random locations on sphere
+        r_ = np.random.random((3, 1)) - 0.5
+        r = radius * r_ / np.linalg.norm(r_)
+        r_v0s += [r]
+
+        if pointing_at_origin:
+            # random orientation pointing at origin
+            z = -r / np.linalg.norm(r)
+            y = np.random.randn(3, 1)
+            y = y - y.T @ z * z
+            y = y / np.linalg.norm(y)
+            x = np.cross(y[:, 0], z[:, 0])[:, None]
+            C_v0s += [np.hstack([x, y, z]).T]
+        else:
+            # random orientation
+            C_v0 = np.linalg.qr(np.random.randn(3, 3))[0]
+            C_v0s += [C_v0]
+
+    r_v0s = np.stack(r_v0s)
+    C_v0s = np.stack(C_v0s)
+
+    return r_v0s, C_v0s
+
+
 if __name__ == "__main__":
-    stereo_loc = create_stereo_localization_problem()
+    stereo_loc = sim_single_pose_localization()

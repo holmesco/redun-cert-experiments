@@ -5,7 +5,7 @@ import torch
 import gtsam
 
 from mat_weight_loc.stereo_loc import (
-    create_stereo_localization_problem,
+    sim_single_pose_localization,
     SinglePoseStereoLocalization,
 )
 from utils.lie_algebra import se3_exp, se3_inv, se3_log
@@ -27,7 +27,7 @@ def _assert_pose_close(T_est: torch.Tensor, T_ref: torch.Tensor, atol: float) ->
 
 @pytest.fixture(scope="module")
 def stereo_problem():
-    return create_stereo_localization_problem(
+    return sim_single_pose_localization(
         N_map=50,
         seed=0,
     )
