@@ -11,12 +11,7 @@ from utils.keypoint_tools import get_inv_cov_weights
 from utils.lie_algebra import se3_exp
 
 from mwcerts.cert_factor_graph import LocalizationFactorGraph
-from ranktools import (
-    AnalyticCenter,
-    AnalyticCenterParams,
-    LinearSolverType,
-    LowRankPrecondMethod,
-)
+
 
 
 def set_seed(x):
@@ -37,7 +32,6 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         weights: np.ndarray,
         inv_cov_weights: np.ndarray,
         T_s_v: np.ndarray | None = None,
-        params: AnalyticCenterParams | None = None,
     ):
 
         super().__init__()
