@@ -36,7 +36,9 @@ dependencies = [
 	"mwcerts",
 	"spatialmath-python>=1.1.15",
 	"poly-matrix",
+	"pyyaml",
 	"black>=26.3.1",
+	"lightglue",
 ]
 
 [project.optional-dependencies]
@@ -57,9 +59,10 @@ torchaudio = { index = "pytorch-cu121" }
 torchvision = { index = "pytorch-cu121" }
 clipperpy = { workspace = true }
 cert-tools = { workspace = true, editable = true }
-ranktools = { path = "../ranktools" }
 poly-matrix = { workspace = true }
 mwcerts = { workspace = true }
+lightglue = { workspace = true }
+ranktools = { path = "../ranktools" }
 
 [tool.uv.workspace]
 members = [
@@ -67,6 +70,7 @@ members = [
     "extern/certifiable-tools",
     "extern/mat_weight_certs",
     "extern/poly_matrix",
+    "extern/LightGlue",
 ]
 
 [tool.hatch.build.targets.wheel]
