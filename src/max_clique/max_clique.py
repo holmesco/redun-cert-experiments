@@ -4,11 +4,12 @@ import open3d as o3d
 from scipy.spatial.transform import Rotation
 from scipy.special import gammainc
 from scipy.sparse import csc_array
+import torch
 
 import clipperpy
 from cert_tools.sdp_solvers import solve_sdp_fusion
 from ranktools import AnalyticCenter, AnalyticCenterParams, LinearSolverType, LowRankPrecondMethod
-
+from ranktools_pytorch import AnalyticCenterPyTorch
 
 def randsphere(m,n,r):
     """Draw random points from within a sphere."""
@@ -136,12 +137,12 @@ class MaxCliqueProblem:
             self.params.verbose = True
             self.params.lin_solver = LinearSolverType.MFCG_LRP
             self.params.lin_solve_max_iter = 200
-            self.params.lin_solve_tol = 1e-5
+            self.params.lin_solve_tol = 1e-3
             self.params.lrp_params.tau = 1e-5
-            self.params.delta_init = 1e-5
-            self.params.delta_min = 1e-8
+            self.params.delta = 1e-7
+            self.params.eps_cost = 1e-5
+            self.params.eps_mult_min = 1e-8
             self.params.rescale_lin_sys = False
-            # Turn off perturbations:
             self.params.perturb_constraints = False
             self.params.perturb_cost = True
             self.params.adaptive_perturb = True
@@ -150,7 +151,6 @@ class MaxCliqueProblem:
             self.params.early_stop_cert = True
             self.params.max_angle = 1e-3
             self.params.max_iter = 20
-            self.params.cost_perturb = 1e-5
 
 
     def get_constraints(self):
@@ -182,7 +182,7 @@ class MaxCliqueProblem:
         
         return constraints, values
     
-    def certify_candidate(self, x_cand, cost=None):
+    def certify_candidate(self, x_cand, cost=None, use_torch=False):
         """Certify the optimality of a candidate solution to the maximum clique problem.
         
         Parameters
@@ -201,10 +201,18 @@ class MaxCliqueProblem:
             cost = -(x_cand.T @ self.M @ x_cand).item()
         print(f"target cost: {cost}")
         print(f"Number of constraints: {len(self.As)}")
-        # Run certifier
-        ac = AnalyticCenter(C=-self.M, rho=cost, A=self.As, b=self.bs, params=self.params)
         print("Running analytic center certifier...")
-        result = ac.certify(x_cand)
+        # Run certifier
+        if use_torch:
+            C = torch.Tensor(-self.M)
+            b = torch.Tensor(self.bs)
+            self.params.lrp_params.method = LowRankPrecondMethod.DenseLU
+            x_torch = torch.Tensor(x_cand)[:,None]
+            ac = AnalyticCenterPyTorch(C, cost, self.As, b, self.params, main_gpu=True)
+            result = ac.certify(x_torch)
+        else:
+            ac = AnalyticCenter(C=-self.M, rho=cost, A=self.As, b=self.bs, params=self.params)
+            result = ac.certify(x_cand)
         print(f"------- time for AC: {result.solver_time*1e3:.0f} ms")
         print(f"AC Result: certified={result.certified}  min_eig={result.min_eig:.6e}  complementarity={result.complementarity:.6e}")
         
@@ -224,7 +232,7 @@ class MaxCliqueProblem:
         soln = self.clipper.get_solution()
         return soln
 
-    def solve_and_certify(self):
+    def solve_and_certify(self, use_torch=False):
         """Solve the maximum clique problem and certify optimality.
         
         Parameters
@@ -243,7 +251,7 @@ class MaxCliqueProblem:
         u = soln.u / np.linalg.norm(soln.u)
         print(f"Clipper local solution found in {soln.t} seconds")
         # Certify solution
-        result = self.certify_candidate(u)
+        result = self.certify_candidate(u, use_torch=use_torch)
         
         return u
         
@@ -298,8 +306,8 @@ if __name__ == "__main__":
     # Build a bunny dataset
     m = 500      # total number of associations in problem
     n1 = 500     # number of points used on model (i.e., seen in view 1)
-    n2o = 50     # number of outliers in data (i.e., seen in view 2)
-    outrat = 0.9 # outlier ratio of initial association set
+    n2o = 20     # number of outliers in data (i.e., seen in view 2)
+    outrat = 0.6 # outlier ratio of initial association set
     sigma = 0.01  # uniform noise [m] range
     pcfile = '/workspace/experiments/data/bun10k.ply'  # Object file
     # Random pose transormation
@@ -324,4 +332,4 @@ if __name__ == "__main__":
     # # run Certifier
     # result = prob.certify_candidate(u)
     
-    prob.solve_and_certify()
+    prob.solve_and_certify(use_torch=False)

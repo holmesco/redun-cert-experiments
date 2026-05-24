@@ -113,7 +113,9 @@ def get_gt_setup(
     n_turns=0.1,  # (circle) number of turns around the cluster
     lm_bound=1.0,  # Bounding box of uniform landmark distribution.
 ):
-    """Used to generate a trajectory of ground truth pose data"""
+    """Used to generate a trajectory of ground truth pose data
+    Generates translations in the world frame (0). 
+    Generates rotations that transform vectors in the world frame to vectors in the pose frame"""
 
     # Ground Truth Map Points
     # Cluster at the origin

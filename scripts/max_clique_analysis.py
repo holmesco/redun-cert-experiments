@@ -28,7 +28,7 @@ from ranktools import AnalyticCenterParams, LinearSolverType, LowRankPrecondMeth
 N_OUTRAT = 10
 
 # Number of randomized trials to run per outlier ratio
-N_TRIALS_PER_OUTRAT = 5
+N_TRIALS_PER_OUTRAT = 1
 
 # Range of outlier ratios (log-spaced between these bounds)
 OUTRAT_MIN = 0.1
@@ -73,15 +73,13 @@ def make_ac_params(solver_type: LinearSolverType) -> AnalyticCenterParams:
     params.lin_solve_max_iter = 400
     params.lin_solve_tol = 1e-5
     params.lrp_params.tau = 1e-6
-    params.delta_init = 1e-7
-    params.delta_min = 1e-8
-    # turn off rescaling
+    params.delta = 1e-7
+    params.eps_mult_min = 1e-8
+    params.eps_cost = 1e-7
     params.rescale_lin_sys = False
-    # Turn off perturbations:
     params.perturb_constraints = False
     params.perturb_cost = True
     params.adaptive_perturb = True
-    params.cost_offset = 1e-4
     # Set preconditioner
     params.lrp_params.method = LowRankPrecondMethod.SparseLDLT
     
