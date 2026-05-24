@@ -1,8 +1,10 @@
 import time
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 import gtsam
 
@@ -18,7 +20,20 @@ class PGOProblem:
     n_poses: int
 
 
-def relative_pose_case(n_poses=5, seed: int | None = 7):
+class PGOCase(Enum):
+    ChainInitPrior = "chain_init_prior"
+    PerPosePrior = "per_pose_prior"
+    ChainPerPosePrior = "chain_per_pose_prior"
+
+
+def add_noise_to_pose(pose_gt: gtsam.Pose3, noise: float) -> gtsam.Pose3:
+    pert = gtsam.Pose3.Expmap(noise * np.random.randn(6))
+    return pose_gt.compose(pert)
+
+
+def relative_pose_case(
+    n_poses=5, seed: int | None = 7, per_pose_prior: bool = False, noise: float = 0.0
+) -> PGOProblem:
     """Tests relative pose measurements and prior pose with no landmarks."""
     if seed is not None:
         np.random.seed(seed)
@@ -36,20 +51,22 @@ def relative_pose_case(n_poses=5, seed: int | None = 7):
         trans_gt = gtsam.Point3(*np.random.randn(3))
         poses_gt.append(gtsam.Pose3(rot_gt, trans_gt))
 
-        if i == 0:
+        if i == 0 or per_pose_prior:
             # Add a prior on the first pose to fix gauge freedom.
             fg.add_prior_pose_factor(
                 pose_id=pose_id,
-                pose_meas=poses_gt[i],
+                pose_meas=add_noise_to_pose(poses_gt[i], noise),
                 weight_rot=1.0,
                 weight_trans=1.0,
             )
-        else:
+        if i > 0:
             # Add a between factor between this pose and the previous pose.
+            between_gt = poses_gt[i - 1].between(poses_gt[i])
+            between_meas = add_noise_to_pose(between_gt, noise)
             fg.add_between_factor(
                 pose_id_i=pose_ids[i],
                 pose_id_j=pose_ids[i - 1],
-                relative_pose=poses_gt[i].compose(poses_gt[i - 1].inverse()),
+                relative_pose=between_meas,
                 weight_rot=1.0,
                 weight_trans=1.0,
             )
@@ -58,9 +75,19 @@ def relative_pose_case(n_poses=5, seed: int | None = 7):
     fg.add_constraints()
 
     # Adjust cost offset for certification.
-    fg.cert_params.eps_cost = 5e-3 / np.trace(fg.get_sdp_cost())
-    fg.cert_params.lin_solve_tol = 1e-6
+    C = fg.get_sdp_cost()
+    C[0, 0] = 0.0
+    C /= np.linalg.norm(C, ord="fro")
+    fg.cert_params.perturb_cost = True
+    fg.cert_params.eps_cost = 1e-5
+    fg.cert_params.perturb_constraints = True
+    fg.cert_params.eps_constr = 1e-5
+    fg.cert_params.delta = 1e-6
+    fg.cert_params.adaptive_perturb = False
+    fg.cert_params.lin_solve_tol = 1e-3
     fg.cert_params.max_iter = 50
+    fg.cert_params.lrp_params.tau = 1e-4
+    fg.cert_params.max_angle = 5e-3
 
     return PGOProblem(
         factor_graph=fg,
@@ -89,7 +116,14 @@ def _make_initial_estimate(
 
     return initial
 
-def run_optimization(problem: PGOProblem, verbose: bool = True, optimize_max_iterations: int = 100, initial_seed: int = 0):
+
+def run_optimization(
+    problem: PGOProblem,
+    verbose: bool = True,
+    optimize_max_iterations: int = 100,
+    initial_seed: int = 0,
+    export: bool = False,
+):
     # Problem statistics.
     var_dict = problem.factor_graph.get_variable_dict(use_cached=False)
     sdp_cost = problem.factor_graph.get_sdp_cost(var_dict)
@@ -108,42 +142,51 @@ def run_optimization(problem: PGOProblem, verbose: bool = True, optimize_max_ite
         adjust_cost=False,
     )
     sdp_runtime_s = info_sdp["time"]
+
+    x_sdp = X[:, [0]]
+    values_sdp = problem.factor_graph.values_from_vector(x_sdp)
     
     cert_result = problem.factor_graph.certify_solution(
-        optimized_values,
+        values_sdp,
         verbose=verbose,
         adjust_cost=True,
     )
     cert_runtime_s = cert_result.solver_time
-    
+
     # Compute optimal costs
     C = problem.factor_graph.get_sdp_cost(var_dict)
     x_opt = problem.factor_graph.vector_from_values(optimized_values)
-    x_sdp = X[:,[0]]
     cost_opt = (x_opt.T @ C @ x_opt).item()
     cost_sdp = (x_sdp.T @ C @ x_sdp).item()
-    
-    return{
-            "num_constraints": len(sdp_constraints),
-            "n_poses": int(problem.n_poses),
-            "sdp_variable_dim": int(sdp_cost.shape[0]),
-            "cost_opt": cost_opt,
-            "cost_sdp": cost_sdp,
-            "certified": cert_result.certified,
-            "sdp_runtime_s": sdp_runtime_s,
-            "cert_runtime_s": cert_runtime_s,
-            "local_runtime_s": local_runtime_s,            
-        }
+
+    if export:
+        problem.factor_graph.export_certifier(
+            file_path=f"pgo_certifier_{problem.n_poses}_poses.txt",
+            problem_name=f"pgo_{problem.n_poses}_poses",
+            solution=x_sdp,
+        )
+
+    return {
+        "num_constraints": len(sdp_constraints),
+        "n_poses": int(problem.n_poses),
+        "sdp_variable_dim": int(sdp_cost.shape[0]),
+        "cost_opt": cost_opt,
+        "cost_sdp": cost_sdp,
+        "certified": cert_result.certified,
+        "sdp_runtime_s": sdp_runtime_s,
+        "cert_runtime_s": cert_runtime_s,
+        "local_runtime_s": local_runtime_s,
+    }
 
 
 def run_timing_analysis(
     min_poses: int = 1,
-    max_poses: int = 100,
+    max_poses: int = 50,
     num_trials: int = 10,
     problems_per_trial: int = 5,
     seed: int | None = 7,
     optimize_max_iterations: int = 100,
-    verbose: bool = False,
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """Run timing analysis for optimization, SDP solve, and certification.
 
@@ -198,19 +241,24 @@ def run_timing_analysis(
             result["trial_index"] = trial_index
             result["problem_index"] = problem_index
             result["problem_seed"] = problem_seed
-            
+
             rows.append(result)
- 
+
     return pd.DataFrame(rows)
 
+
 if __name__ == "__main__":
-    problem = relative_pose_case(n_poses=20, seed=7)
-    result = run_optimization(problem, verbose=True, optimize_max_iterations=100)
+    problem = relative_pose_case(n_poses=2, seed=7, noise=1e-3, per_pose_prior=True)
+    result = run_optimization(
+        problem, verbose=True, export=False
+    )
     print(result)
     
+    
+
     # df = run_timing_analysis(
     #     min_poses=1,
-    #     max_poses=100,
+    #     max_poses=40,
     #     num_trials=10,
     #     problems_per_trial=1,
     #     seed=7,
