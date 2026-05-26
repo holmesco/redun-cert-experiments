@@ -53,6 +53,36 @@ class GroundtruthData:
     b_a_rs_s: np.ndarray
 
 
+@dataclass(frozen=True)
+class StereoCamera:
+    camera_fx: float
+    camera_fy: float
+    camera_cx: float
+    camera_cy: float
+    camera_k1: float
+    camera_k2: float
+    camera_p1: float
+    camera_p2: float
+    camera_width: int
+    camera_height: int
+    camera_fps: float
+    camera_bf: float
+    camera_rgb: int
+    th_depth: float
+    left_height: int
+    left_width: int
+    left_d: np.ndarray
+    left_k: np.ndarray
+    left_r: np.ndarray
+    left_p: np.ndarray
+    right_height: int
+    right_width: int
+    right_d: np.ndarray
+    right_k: np.ndarray
+    right_r: np.ndarray
+    right_p: np.ndarray
+
+
 class EurocDataset:
     def __init__(
         self,
@@ -83,24 +113,24 @@ class EurocDataset:
 
         # Initialize stereo rectification maps
         self.cam0_rect_map = initUndistortRectifyMap(
-            self.stereo_rectification["left"]["K"],
-            self.stereo_rectification["left"]["D"],
-            self.stereo_rectification["left"]["R"],
-            self.stereo_rectification["left"]["P"][:3, :3],
+            self.stereo_rectification.left_k,
+            self.stereo_rectification.left_d,
+            self.stereo_rectification.left_r,
+            self.stereo_rectification.left_p[:3, :3],
             (
-                self.stereo_rectification["left"]["width"],
-                self.stereo_rectification["left"]["height"],
+                self.stereo_rectification.left_width,
+                self.stereo_rectification.left_height,
             ),
             CV_32F,
         )
         self.cam1_rect_map = initUndistortRectifyMap(
-            self.stereo_rectification["right"]["K"],
-            self.stereo_rectification["right"]["D"],
-            self.stereo_rectification["right"]["R"],
-            self.stereo_rectification["right"]["P"][:3, :3],
+            self.stereo_rectification.right_k,
+            self.stereo_rectification.right_d,
+            self.stereo_rectification.right_r,
+            self.stereo_rectification.right_p[:3, :3],
             (
-                self.stereo_rectification["right"]["width"],
-                self.stereo_rectification["right"]["height"],
+                self.stereo_rectification.right_width,
+                self.stereo_rectification.right_height,
             ),
             CV_32F,
         )
@@ -337,10 +367,9 @@ class EurocDataset:
             interpolation=INTER_LINEAR,
         )
         return rect_img0, rect_img1
-    
 
-    def _load_stereo_rectification(self, stereo_params: Path) -> dict[str, Any]:
-        """Loads data from the stereo rectification YAML file. 
+    def _load_stereo_rectification(self, stereo_params: Path) -> StereoCamera:
+        """Loads data from the stereo rectification YAML file.
         Expected file should match the one used for ORBSLAM"""
         if not stereo_params.exists():
             raise FileNotFoundError(f"Stereo params not found: {stereo_params}")
@@ -349,28 +378,46 @@ class EurocDataset:
         if not fs.isOpened():
             raise FileNotFoundError(f"Failed to open stereo params: {stereo_params}")
 
-        rectification = {
-            "left": {
-                "height": int(fs.getNode("LEFT.height").real()),
-                "width": int(fs.getNode("LEFT.width").real()),
-                "D": fs.getNode("LEFT.D").mat(),
-                "K": fs.getNode("LEFT.K").mat(),
-                "R": fs.getNode("LEFT.R").mat(),
-                "P": fs.getNode("LEFT.P").mat(),
-            },
-            "right": {
-                "height": int(fs.getNode("RIGHT.height").real()),
-                "width": int(fs.getNode("RIGHT.width").real()),
-                "D": fs.getNode("RIGHT.D").mat(),
-                "K": fs.getNode("RIGHT.K").mat(),
-                "R": fs.getNode("RIGHT.R").mat(),
-                "P": fs.getNode("RIGHT.P").mat(),
-            },
-        }
-        
-        
+        def read_real(path: str) -> float:
+            return float(fs.getNode(path).real())
+
+        def read_int(path: str) -> int:
+            return int(fs.getNode(path).real())
+
+        def read_mat(path: str) -> np.ndarray:
+            return fs.getNode(path).mat()
+
+        stereo = StereoCamera(
+            camera_fx=read_real("Camera.fx"),
+            camera_fy=read_real("Camera.fy"),
+            camera_cx=read_real("Camera.cx"),
+            camera_cy=read_real("Camera.cy"),
+            camera_k1=read_real("Camera.k1"),
+            camera_k2=read_real("Camera.k2"),
+            camera_p1=read_real("Camera.p1"),
+            camera_p2=read_real("Camera.p2"),
+            camera_width=read_int("Camera.width"),
+            camera_height=read_int("Camera.height"),
+            camera_fps=read_real("Camera.fps"),
+            camera_bf=read_real("Camera.bf"),
+            camera_rgb=read_int("Camera.RGB"),
+            th_depth=read_real("ThDepth"),
+            left_height=read_int("LEFT.height"),
+            left_width=read_int("LEFT.width"),
+            left_d=read_mat("LEFT.D"),
+            left_k=read_mat("LEFT.K"),
+            left_r=read_mat("LEFT.R"),
+            left_p=read_mat("LEFT.P"),
+            right_height=read_int("RIGHT.height"),
+            right_width=read_int("RIGHT.width"),
+            right_d=read_mat("RIGHT.D"),
+            right_k=read_mat("RIGHT.K"),
+            right_r=read_mat("RIGHT.R"),
+            right_p=read_mat("RIGHT.P"),
+        )
+
         fs.release()
-        return rectification
+        return stereo
 
     def _load_yaml(self, yaml_path: Path) -> dict[str, Any]:
         with yaml_path.open("r", encoding="utf-8") as handle:
