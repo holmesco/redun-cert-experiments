@@ -1,18 +1,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import List
 from pathlib import Path
 from typing import Any
 import csv
 
 import numpy as np
 import yaml
+from matplotlib import pyplot as plt
+from scipy.spatial.transform import Rotation, RigidTransform
+import cv2
+from cv2 import initUndistortRectifyMap, remap, CV_32F, INTER_LINEAR
+
+
+@dataclass(frozen=True)
+class CameraSensorInfo:
+    sensor_type: str | None
+    comment: str | None
+    T_bs: np.ndarray
+    rate_hz: float | None
+    resolution: tuple[int, int] | None
+    camera_model: str | None
+    intrinsics: np.ndarray
+    distortion_model: str | None
+    distortion_coefficients: np.ndarray
 
 
 @dataclass(frozen=True)
 class CameraInfo:
     path: Path
-    sensor: dict[str, Any]
+    sensor: CameraSensorInfo
     data_dir: Path
     data_csv: Path
     timestamp_to_file: dict[int, Path]
@@ -29,14 +47,20 @@ class GroundtruthInfo:
 class GroundtruthData:
     timestamps: np.ndarray
     p_rs_r: np.ndarray
-    q_rs: np.ndarray
+    T_rs: np.ndarray
     v_rs_r: np.ndarray
     b_w_rs_s: np.ndarray
     b_a_rs_s: np.ndarray
 
 
 class EurocDataset:
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        stereo_params: Path = Path(
+            "/workspace/experiments/data/Euroc/EurocStereo.yaml"
+        ),
+    ):
         self.root = Path(path)
         if not self.root.exists():
             raise FileNotFoundError(f"Euroc dataset path not found: {self.root}")
@@ -55,6 +79,31 @@ class EurocDataset:
             mav0_dir / "state_groundtruth_estimate0"
         )
         self.gt_data = self.process_groundtruth()
+        self.stereo_rectification = self._load_stereo_rectification(stereo_params)
+
+        # Initialize stereo rectification maps
+        self.cam0_rect_map = initUndistortRectifyMap(
+            self.stereo_rectification["left"]["K"],
+            self.stereo_rectification["left"]["D"],
+            self.stereo_rectification["left"]["R"],
+            self.stereo_rectification["left"]["P"][:3, :3],
+            (
+                self.stereo_rectification["left"]["width"],
+                self.stereo_rectification["left"]["height"],
+            ),
+            CV_32F,
+        )
+        self.cam1_rect_map = initUndistortRectifyMap(
+            self.stereo_rectification["right"]["K"],
+            self.stereo_rectification["right"]["D"],
+            self.stereo_rectification["right"]["R"],
+            self.stereo_rectification["right"]["P"][:3, :3],
+            (
+                self.stereo_rectification["right"]["width"],
+                self.stereo_rectification["right"]["height"],
+            ),
+            CV_32F,
+        )
 
     def _resolve_sequence_root(self, root: Path) -> Path:
         if (root / "mav0").exists():
@@ -95,7 +144,7 @@ class EurocDataset:
 
         return CameraInfo(
             path=cam_dir,
-            sensor=self._load_yaml(sensor_yaml),
+            sensor=self._parse_camera_sensor(self._load_yaml(sensor_yaml)),
             data_dir=cam_dir / "data",
             data_csv=data_csv,
             timestamp_to_file=self._load_camera_mapping(data_csv, cam_dir / "data"),
@@ -114,6 +163,47 @@ class EurocDataset:
                 filename = row[1]
                 mapping[timestamp] = data_dir / filename
         return mapping
+
+    def _parse_camera_sensor(self, sensor: dict[str, Any]) -> CameraSensorInfo:
+        t_bs_data = sensor.get("T_BS", {})
+        rows = int(t_bs_data.get("rows", 0))
+        cols = int(t_bs_data.get("cols", 0))
+        data = t_bs_data.get("data", [])
+        if rows > 0 and cols > 0 and data:
+            t_bs = np.array(data, dtype=float).reshape(rows, cols)
+        else:
+            t_bs = np.empty((0, 0), dtype=float)
+
+        resolution = sensor.get("resolution")
+        if resolution is not None:
+            resolution = (int(resolution[0]), int(resolution[1]))
+
+        intrinsics = sensor.get("intrinsics")
+        intrinsics_array = (
+            np.array(intrinsics, dtype=float)
+            if intrinsics is not None
+            else np.array([])
+        )
+
+        distortion_coefficients = sensor.get("distortion_coefficients")
+        distortion_array = (
+            np.array(distortion_coefficients, dtype=float)
+            if distortion_coefficients is not None
+            else np.array([])
+        )
+
+        rate_hz = sensor.get("rate_hz")
+        return CameraSensorInfo(
+            sensor_type=sensor.get("sensor_type"),
+            comment=sensor.get("comment"),
+            T_bs=t_bs,
+            rate_hz=float(rate_hz) if rate_hz is not None else None,
+            resolution=resolution,
+            camera_model=sensor.get("camera_model"),
+            intrinsics=intrinsics_array,
+            distortion_model=sensor.get("distortion_model"),
+            distortion_coefficients=distortion_array,
+        )
 
     def _load_groundtruth(self, gt_dir: Path) -> GroundtruthInfo | None:
         if not gt_dir.exists():
@@ -150,14 +240,137 @@ class EurocDataset:
         b_w_rs_s = data[:, 11:14]
         b_a_rs_s = data[:, 14:17]
 
+        # define transforms
+        T_rs: List[np.ndarray] = []
+        for i in range(len(timestamps)):
+            R_rs = Rotation(q_rs[i, :], scalar_first=True).as_matrix()
+            T_rs_top = np.hstack([R_rs, p_rs_r[[i], :].T])
+            T_rs.append(np.vstack([T_rs_top, np.array([0.0, 0.0, 0.0, 1.0])]))
+
         return GroundtruthData(
             timestamps=timestamps,
             p_rs_r=p_rs_r,
-            q_rs=q_rs,
+            T_rs=np.stack(T_rs),
             v_rs_r=v_rs_r,
             b_w_rs_s=b_w_rs_s,
             b_a_rs_s=b_a_rs_s,
         )
+
+    def plot_groundtruth_trajectory(self, stride: int = 50) -> None:
+        if self.gt_data is None:
+            raise ValueError("Groundtruth data not loaded.")
+
+        T_rs = self.gt_data.T_rs
+        if T_rs.size == 0:
+            raise ValueError("Groundtruth poses are empty.")
+
+        positions = T_rs[:, :3, 3]
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection="3d")
+        ax.plot(positions[:, 0], positions[:, 1], positions[:, 2], "k-")
+
+        stride = max(1, int(stride))
+        axis_length = 0.1
+        for i in range(0, T_rs.shape[0], stride):
+            R_rs = T_rs[i, :3, :3]
+            p_rs = T_rs[i, :3, 3]
+            x_axis = p_rs + axis_length * R_rs[:, 0]
+            y_axis = p_rs + axis_length * R_rs[:, 1]
+            z_axis = p_rs + axis_length * R_rs[:, 2]
+
+            ax.plot(
+                [p_rs[0], x_axis[0]], [p_rs[1], x_axis[1]], [p_rs[2], x_axis[2]], "r-"
+            )
+            ax.plot(
+                [p_rs[0], y_axis[0]], [p_rs[1], y_axis[1]], [p_rs[2], y_axis[2]], "g-"
+            )
+            ax.plot(
+                [p_rs[0], z_axis[0]], [p_rs[1], z_axis[1]], [p_rs[2], z_axis[2]], "b-"
+            )
+
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+        ax.set_title("Groundtruth trajectory")
+        ax.axis("equal")
+        ax.view_init(elev=90, azim=-90)
+
+    def get_image_at_timestamp(
+        self, timestamp: int, rectify=True
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cam0_path = self.cam0.timestamp_to_file.get(timestamp)
+        cam1_path = self.cam1.timestamp_to_file.get(timestamp)
+
+        if cam0_path is None:
+            raise KeyError(f"Timestamp {timestamp} not found in cam0 mapping.")
+        if cam1_path is None:
+            raise KeyError(f"Timestamp {timestamp} not found in cam1 mapping.")
+
+        if not cam0_path.exists():
+            raise FileNotFoundError(f"cam0 image not found: {cam0_path}")
+        if not cam1_path.exists():
+            raise FileNotFoundError(f"cam1 image not found: {cam1_path}")
+
+        img0 = plt.imread(cam0_path)
+        img1 = plt.imread(cam1_path)
+        if rectify:
+            img0, img1 = self.rectify_image_pair(img0, img1)
+        return img0, img1
+
+    def rectify_image_pair(
+        self, img0: np.ndarray, img1: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self.stereo_rectification is None:
+            raise ValueError("Stereo rectification parameters not loaded.")
+
+        rect_img0 = remap(
+            img0,
+            self.cam0_rect_map[0],
+            self.cam0_rect_map[1],
+            interpolation=INTER_LINEAR,
+        )
+        rect_img1 = remap(
+            img1,
+            self.cam1_rect_map[0],
+            self.cam1_rect_map[1],
+            interpolation=INTER_LINEAR,
+        )
+        return rect_img0, rect_img1
+    
+
+    def _load_stereo_rectification(self, stereo_params: Path) -> dict[str, Any]:
+        """Loads data from the stereo rectification YAML file. 
+        Expected file should match the one used for ORBSLAM"""
+        if not stereo_params.exists():
+            raise FileNotFoundError(f"Stereo params not found: {stereo_params}")
+
+        fs = cv2.FileStorage(str(stereo_params), cv2.FILE_STORAGE_READ)
+        if not fs.isOpened():
+            raise FileNotFoundError(f"Failed to open stereo params: {stereo_params}")
+
+        rectification = {
+            "left": {
+                "height": int(fs.getNode("LEFT.height").real()),
+                "width": int(fs.getNode("LEFT.width").real()),
+                "D": fs.getNode("LEFT.D").mat(),
+                "K": fs.getNode("LEFT.K").mat(),
+                "R": fs.getNode("LEFT.R").mat(),
+                "P": fs.getNode("LEFT.P").mat(),
+            },
+            "right": {
+                "height": int(fs.getNode("RIGHT.height").real()),
+                "width": int(fs.getNode("RIGHT.width").real()),
+                "D": fs.getNode("RIGHT.D").mat(),
+                "K": fs.getNode("RIGHT.K").mat(),
+                "R": fs.getNode("RIGHT.R").mat(),
+                "P": fs.getNode("RIGHT.P").mat(),
+            },
+        }
+        
+        
+        fs.release()
+        return rectification
 
     def _load_yaml(self, yaml_path: Path) -> dict[str, Any]:
         with yaml_path.open("r", encoding="utf-8") as handle:
@@ -170,7 +383,29 @@ class EurocDataset:
 
 
 if __name__ == "__main__":
-    root = Path("/workspace/experiments/data/Euroc/V1_01_easy")
+    root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
     ds = EurocDataset(root)
+    # ds.plot_groundtruth_trajectory()
+
+    # plot images
+    timestamp = list(ds.cam0.timestamp_to_file.keys())[50]
+    im0_raw, im1_raw = ds.get_image_at_timestamp(timestamp, rectify=False)
+    im0_rect, im1_rect = ds.get_image_at_timestamp(timestamp, rectify=True)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    axes[0, 0].imshow(im0_raw, cmap="gray")
+    axes[0, 0].set_title("cam0 (raw)")
+    axes[0, 0].axis("off")
+    axes[0, 1].imshow(im1_raw, cmap="gray")
+    axes[0, 1].set_title("cam1 (raw)")
+    axes[0, 1].axis("off")
+    axes[1, 0].imshow(im0_rect, cmap="gray")
+    axes[1, 0].set_title("cam0 (rectified)")
+    axes[1, 0].axis("off")
+    axes[1, 1].imshow(im1_rect, cmap="gray")
+    axes[1, 1].set_title("cam1 (rectified)")
+    axes[1, 1].axis("off")
+    fig.tight_layout()
+    plt.show()
 
     print("done")
