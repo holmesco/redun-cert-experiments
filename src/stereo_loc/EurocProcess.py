@@ -11,7 +11,6 @@ import yaml
 from matplotlib import pyplot as plt
 from scipy.spatial.transform import Rotation, RigidTransform
 import cv2
-from cv2 import initUndistortRectifyMap, remap, CV_32F, INTER_LINEAR
 
 
 @dataclass(frozen=True)
@@ -112,7 +111,7 @@ class EurocDataset:
         self.stereo_rectification = self._load_stereo_rectification(stereo_params)
 
         # Initialize stereo rectification maps
-        self.cam0_rect_map = initUndistortRectifyMap(
+        self.cam0_rect_map = cv2.initUndistortRectifyMap(
             self.stereo_rectification.left_k,
             self.stereo_rectification.left_d,
             self.stereo_rectification.left_r,
@@ -121,9 +120,9 @@ class EurocDataset:
                 self.stereo_rectification.left_width,
                 self.stereo_rectification.left_height,
             ),
-            CV_32F,
+            cv2.CV_32F,
         )
-        self.cam1_rect_map = initUndistortRectifyMap(
+        self.cam1_rect_map = cv2.initUndistortRectifyMap(
             self.stereo_rectification.right_k,
             self.stereo_rectification.right_d,
             self.stereo_rectification.right_r,
@@ -132,7 +131,7 @@ class EurocDataset:
                 self.stereo_rectification.right_width,
                 self.stereo_rectification.right_height,
             ),
-            CV_32F,
+            cv2.CV_32F,
         )
 
     def _resolve_sequence_root(self, root: Path) -> Path:
@@ -246,6 +245,66 @@ class EurocDataset:
             data_csv=gt_dir / "data.csv",
         )
 
+    def _load_stereo_rectification(self, stereo_params: Path) -> StereoCamera:
+        """Loads data from the stereo rectification YAML file.
+        Expected file should match the one used for ORBSLAM"""
+        if not stereo_params.exists():
+            raise FileNotFoundError(f"Stereo params not found: {stereo_params}")
+
+        fs = cv2.FileStorage(str(stereo_params), cv2.FILE_STORAGE_READ)
+        if not fs.isOpened():
+            raise FileNotFoundError(f"Failed to open stereo params: {stereo_params}")
+
+        def read_real(path: str) -> float:
+            return float(fs.getNode(path).real())
+
+        def read_int(path: str) -> int:
+            return int(fs.getNode(path).real())
+
+        def read_mat(path: str) -> np.ndarray:
+            return fs.getNode(path).mat()
+
+        stereo = StereoCamera(
+            camera_fx=read_real("Camera.fx"),
+            camera_fy=read_real("Camera.fy"),
+            camera_cx=read_real("Camera.cx"),
+            camera_cy=read_real("Camera.cy"),
+            camera_k1=read_real("Camera.k1"),
+            camera_k2=read_real("Camera.k2"),
+            camera_p1=read_real("Camera.p1"),
+            camera_p2=read_real("Camera.p2"),
+            camera_width=read_int("Camera.width"),
+            camera_height=read_int("Camera.height"),
+            camera_fps=read_real("Camera.fps"),
+            camera_bf=read_real("Camera.bf"),
+            camera_rgb=read_int("Camera.RGB"),
+            th_depth=read_real("ThDepth"),
+            left_height=read_int("LEFT.height"),
+            left_width=read_int("LEFT.width"),
+            left_d=read_mat("LEFT.D"),
+            left_k=read_mat("LEFT.K"),
+            left_r=read_mat("LEFT.R"),
+            left_p=read_mat("LEFT.P"),
+            right_height=read_int("RIGHT.height"),
+            right_width=read_int("RIGHT.width"),
+            right_d=read_mat("RIGHT.D"),
+            right_k=read_mat("RIGHT.K"),
+            right_r=read_mat("RIGHT.R"),
+            right_p=read_mat("RIGHT.P"),
+        )
+
+        fs.release()
+        return stereo
+
+    def _load_yaml(self, yaml_path: Path) -> dict[str, Any]:
+        with yaml_path.open("r", encoding="utf-8") as handle:
+            return yaml.safe_load(handle)
+
+    def _load_yaml_if_exists(self, yaml_path: Path) -> dict[str, Any] | None:
+        if not yaml_path.exists():
+            return None
+        return self._load_yaml(yaml_path)
+
     def process_groundtruth(self) -> GroundtruthData | None:
         if self.groundtruth is None:
             return None
@@ -354,80 +413,42 @@ class EurocDataset:
         if self.stereo_rectification is None:
             raise ValueError("Stereo rectification parameters not loaded.")
 
-        rect_img0 = remap(
+        rect_img0 = cv2.remap(
             img0,
             self.cam0_rect_map[0],
             self.cam0_rect_map[1],
-            interpolation=INTER_LINEAR,
+            interpolation=cv2.INTER_LINEAR,
         )
-        rect_img1 = remap(
+        rect_img1 = cv2.remap(
             img1,
             self.cam1_rect_map[0],
             self.cam1_rect_map[1],
-            interpolation=INTER_LINEAR,
+            interpolation=cv2.INTER_LINEAR,
         )
         return rect_img0, rect_img1
 
-    def _load_stereo_rectification(self, stereo_params: Path) -> StereoCamera:
-        """Loads data from the stereo rectification YAML file.
-        Expected file should match the one used for ORBSLAM"""
-        if not stereo_params.exists():
-            raise FileNotFoundError(f"Stereo params not found: {stereo_params}")
 
-        fs = cv2.FileStorage(str(stereo_params), cv2.FILE_STORAGE_READ)
-        if not fs.isOpened():
-            raise FileNotFoundError(f"Failed to open stereo params: {stereo_params}")
-
-        def read_real(path: str) -> float:
-            return float(fs.getNode(path).real())
-
-        def read_int(path: str) -> int:
-            return int(fs.getNode(path).real())
-
-        def read_mat(path: str) -> np.ndarray:
-            return fs.getNode(path).mat()
-
-        stereo = StereoCamera(
-            camera_fx=read_real("Camera.fx"),
-            camera_fy=read_real("Camera.fy"),
-            camera_cx=read_real("Camera.cx"),
-            camera_cy=read_real("Camera.cy"),
-            camera_k1=read_real("Camera.k1"),
-            camera_k2=read_real("Camera.k2"),
-            camera_p1=read_real("Camera.p1"),
-            camera_p2=read_real("Camera.p2"),
-            camera_width=read_int("Camera.width"),
-            camera_height=read_int("Camera.height"),
-            camera_fps=read_real("Camera.fps"),
-            camera_bf=read_real("Camera.bf"),
-            camera_rgb=read_int("Camera.RGB"),
-            th_depth=read_real("ThDepth"),
-            left_height=read_int("LEFT.height"),
-            left_width=read_int("LEFT.width"),
-            left_d=read_mat("LEFT.D"),
-            left_k=read_mat("LEFT.K"),
-            left_r=read_mat("LEFT.R"),
-            left_p=read_mat("LEFT.P"),
-            right_height=read_int("RIGHT.height"),
-            right_width=read_int("RIGHT.width"),
-            right_d=read_mat("RIGHT.D"),
-            right_k=read_mat("RIGHT.K"),
-            right_r=read_mat("RIGHT.R"),
-            right_p=read_mat("RIGHT.P"),
+def get_disparity(
+    img0: np.ndarray, img1: np.ndarray, plot=False, matcher=None
+) -> np.ndarray:
+    num_disparities = 16 * 5
+    if matcher is None:
+        matcher = cv2.StereoSGBM_create(minDisparity=0,numDisparities=num_disparities, blockSize=11)
+    # Normalize images to 0-255 and convert to uint8
+    img0_norm = cv2.normalize(img0, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    img1_norm = cv2.normalize(img1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # Compute disparity and rescale to real values
+    disparity = matcher.compute(img0_norm, img1_norm).astype(np.float32) / 16.0
+    # Convert to float and divide by 16 to get true pixel disparity
+    if plot:
+        # Normalize to 0-255 for visualization
+        plt.figure()
+        disparity_visual = cv2.normalize(
+            disparity, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U
         )
-
-        fs.release()
-        return stereo
-
-    def _load_yaml(self, yaml_path: Path) -> dict[str, Any]:
-        with yaml_path.open("r", encoding="utf-8") as handle:
-            return yaml.safe_load(handle)
-
-    def _load_yaml_if_exists(self, yaml_path: Path) -> dict[str, Any] | None:
-        if not yaml_path.exists():
-            return None
-        return self._load_yaml(yaml_path)
-
+        plt.imshow(disparity_visual,cmap="viridis")
+        
+    return disparity
 
 if __name__ == "__main__":
     root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
@@ -435,10 +456,10 @@ if __name__ == "__main__":
     # ds.plot_groundtruth_trajectory()
 
     # plot images
-    timestamp = list(ds.cam0.timestamp_to_file.keys())[50]
+    timestamp = list(ds.cam0.timestamp_to_file.keys())[1000]
     im0_raw, im1_raw = ds.get_image_at_timestamp(timestamp, rectify=False)
     im0_rect, im1_rect = ds.get_image_at_timestamp(timestamp, rectify=True)
-
+    
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     axes[0, 0].imshow(im0_raw, cmap="gray")
     axes[0, 0].set_title("cam0 (raw)")
@@ -453,6 +474,8 @@ if __name__ == "__main__":
     axes[1, 1].set_title("cam1 (rectified)")
     axes[1, 1].axis("off")
     fig.tight_layout()
+
+    disparity = get_disparity(im0_rect, im1_rect, plot=True)
     plt.show()
 
     print("done")
