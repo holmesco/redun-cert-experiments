@@ -401,8 +401,8 @@ class EurocDataset:
         if not cam1_path.exists():
             raise FileNotFoundError(f"cam1 image not found: {cam1_path}")
 
-        img0 = plt.imread(cam0_path)
-        img1 = plt.imread(cam1_path)
+        img0 = cv2.imread(cam0_path, cv2.IMREAD_GRAYSCALE)
+        img1 = cv2.imread(cam1_path, cv2.IMREAD_GRAYSCALE)
         if rectify:
             img0, img1 = self.rectify_image_pair(img0, img1)
         return img0, img1
@@ -431,9 +431,28 @@ class EurocDataset:
 def get_disparity(
     img0: np.ndarray, img1: np.ndarray, plot=False, matcher=None
 ) -> np.ndarray:
-    num_disparities = 16 * 5
     if matcher is None:
-        matcher = cv2.StereoSGBM_create(minDisparity=0,numDisparities=num_disparities, blockSize=11)
+        numDisp = 16 * 7 # Number of disparities
+        bs = 9  # Block size
+        # Calculate smooth penalties automatically based on block size
+        p1 = 8 * 1 * bs * bs
+        p2 = 32 * 1 * bs * bs
+        uniq = 3
+        specWin = 100
+        specRange = 2
+        # Setup the matcher
+        matcher = cv2.StereoSGBM_create(
+            minDisparity=0,
+            numDisparities=numDisp,
+            blockSize=bs,
+            P1=p1,
+            P2=p2,
+            disp12MaxDiff=1,
+            uniquenessRatio=uniq,
+            speckleWindowSize=specWin,
+            speckleRange=specRange,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        )
     # Normalize images to 0-255 and convert to uint8
     img0_norm = cv2.normalize(img0, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     img1_norm = cv2.normalize(img1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -446,17 +465,81 @@ def get_disparity(
         disparity_visual = cv2.normalize(
             disparity, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U
         )
-        plt.imshow(disparity_visual,cmap="viridis")
-        
+        plt.imshow(disparity_visual, cmap="jet")
+
     return disparity
 
-if __name__ == "__main__":
-    root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
-    ds = EurocDataset(root)
-    # ds.plot_groundtruth_trajectory()
 
-    # plot images
-    timestamp = list(ds.cam0.timestamp_to_file.keys())[1000]
+def disparity_interactive(ds: EurocDataset, index=1000):
+    # Retrieve images
+    timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
+    img_L, img_R = ds.get_image_at_timestamp(timestamp, rectify=True)
+    # dummy function
+    def nothing(x):
+        pass
+
+    # Create a window for sliders
+    cv2.namedWindow("SGBM_Tuner", cv2.WINDOW_NORMAL)
+
+    # Create trackbars (sliders)
+    cv2.createTrackbar(
+        "numDisparities", "SGBM_Tuner", 1, 16, nothing
+    )  # Will be multiplied by 16
+    cv2.createTrackbar(
+        "blockSize", "SGBM_Tuner", 2, 10, nothing
+    )  # Will be converted to odd number (2*x + 1)
+    cv2.createTrackbar("uniquenessRatio", "SGBM_Tuner", 15, 30, nothing)
+    cv2.createTrackbar("speckleWindowSize", "SGBM_Tuner", 100, 200, nothing)
+    cv2.createTrackbar("speckleRange", "SGBM_Tuner", 2, 5, nothing)
+
+    while True:
+        # Read current slider values
+        numDisp = cv2.getTrackbarPos("numDisparities", "SGBM_Tuner") * 16
+        bs = cv2.getTrackbarPos("blockSize", "SGBM_Tuner") * 2 + 1
+        uniq = cv2.getTrackbarPos("uniquenessRatio", "SGBM_Tuner")
+        specWin = cv2.getTrackbarPos("speckleWindowSize", "SGBM_Tuner")
+        specRange = cv2.getTrackbarPos("speckleRange", "SGBM_Tuner")
+
+        # Enforce constraints
+        if numDisp < 16:
+            numDisp = 16
+        if bs < 3:
+            bs = 3
+
+        # Calculate smooth penalties automatically based on block size
+        p1 = 8 * 1 * bs * bs
+        p2 = 32 * 1 * bs * bs
+
+        # Setup the matcher
+        stereo = cv2.StereoSGBM_create(
+            minDisparity=0,
+            numDisparities=numDisp,
+            blockSize=bs,
+            P1=p1,
+            P2=p2,
+            disp12MaxDiff=1,
+            uniquenessRatio=uniq,
+            speckleWindowSize=specWin,
+            speckleRange=specRange,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        )
+
+        # Compute and normalize
+        disp = stereo.compute(img_L, img_R).astype(np.float32) / 16.0
+        disp_vis = cv2.normalize(disp, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        disp_vis = cv2.applyColorMap(disp_vis, cv2.COLORMAP_JET)
+        # Show output
+        cv2.imshow("Disparity Map", disp_vis)
+        cv2.imshow("Left Image", img_L)
+
+        # Press 'q' to exit
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cv2.destroyAllWindows()
+
+def make_disparity_plots(ds:EurocDataset, index):
+    timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     im0_raw, im1_raw = ds.get_image_at_timestamp(timestamp, rectify=False)
     im0_rect, im1_rect = ds.get_image_at_timestamp(timestamp, rectify=True)
     
@@ -478,4 +561,15 @@ if __name__ == "__main__":
     disparity = get_disparity(im0_rect, im1_rect, plot=True)
     plt.show()
 
+if __name__ == "__main__":
+    root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
+    ds = EurocDataset(root)
+    # ds.plot_groundtruth_trajectory()
+    
+    # Disparity Tuning:
+    # disparity_interactive(ds, 2300)
+
+    # Disparity Check:
+    make_disparity_plots(ds, 2000)
+    
     print("done")
