@@ -12,6 +12,8 @@ from matplotlib import pyplot as plt
 from scipy.spatial.transform import Rotation, RigidTransform
 import cv2
 
+from utils.stereo_camera_model import get_disparity
+
 
 @dataclass(frozen=True)
 class CameraSensorInfo:
@@ -33,6 +35,7 @@ class CameraInfo:
     data_dir: Path
     data_csv: Path
     timestamp_to_file: dict[int, Path]
+    timestamps: list[int]
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,7 @@ class GroundtruthInfo:
 
 @dataclass(frozen=True)
 class GroundtruthData:
+    timestamps_to_index: dict[int, int]
     timestamps: np.ndarray
     p_rs_r: np.ndarray
     T_rs: np.ndarray
@@ -104,32 +108,32 @@ class EurocDataset:
         self.body = self._load_yaml_if_exists(mav0_dir / "body.yaml")
         self.cam0 = self._load_camera(cam0_dir, "cam0")
         self.cam1 = self._load_camera(cam1_dir, "cam1")
-        self.groundtruth = self._load_groundtruth(
+        self.gt_info: GroundtruthInfo = self._load_groundtruth(
             mav0_dir / "state_groundtruth_estimate0"
         )
-        self.gt_data = self.process_groundtruth()
-        self.stereo_rectification = self._load_stereo_rectification(stereo_params)
+        self.gt_data: GroundtruthData = self.process_groundtruth()
+        self.stereo_camera: StereoCamera = self._load_stereo_camera(stereo_params)
 
         # Initialize stereo rectification maps
         self.cam0_rect_map = cv2.initUndistortRectifyMap(
-            self.stereo_rectification.left_k,
-            self.stereo_rectification.left_d,
-            self.stereo_rectification.left_r,
-            self.stereo_rectification.left_p[:3, :3],
+            self.stereo_camera.left_k,
+            self.stereo_camera.left_d,
+            self.stereo_camera.left_r,
+            self.stereo_camera.left_p[:3, :3],
             (
-                self.stereo_rectification.left_width,
-                self.stereo_rectification.left_height,
+                self.stereo_camera.left_width,
+                self.stereo_camera.left_height,
             ),
             cv2.CV_32F,
         )
         self.cam1_rect_map = cv2.initUndistortRectifyMap(
-            self.stereo_rectification.right_k,
-            self.stereo_rectification.right_d,
-            self.stereo_rectification.right_r,
-            self.stereo_rectification.right_p[:3, :3],
+            self.stereo_camera.right_k,
+            self.stereo_camera.right_d,
+            self.stereo_camera.right_r,
+            self.stereo_camera.right_p[:3, :3],
             (
-                self.stereo_rectification.right_width,
-                self.stereo_rectification.right_height,
+                self.stereo_camera.right_width,
+                self.stereo_camera.right_height,
             ),
             cv2.CV_32F,
         )
@@ -170,13 +174,16 @@ class EurocDataset:
         data_csv = cam_dir / "data.csv"
         if not data_csv.exists():
             raise FileNotFoundError(f"{name} data.csv not found: {data_csv}")
+        timestamp_to_file = self._load_camera_mapping(data_csv, cam_dir / "data")
+        timestamps = list(timestamp_to_file.keys())
 
         return CameraInfo(
             path=cam_dir,
             sensor=self._parse_camera_sensor(self._load_yaml(sensor_yaml)),
             data_dir=cam_dir / "data",
             data_csv=data_csv,
-            timestamp_to_file=self._load_camera_mapping(data_csv, cam_dir / "data"),
+            timestamp_to_file=timestamp_to_file,
+            timestamps=timestamps,
         )
 
     def _load_camera_mapping(self, data_csv: Path, data_dir: Path) -> dict[int, Path]:
@@ -245,7 +252,7 @@ class EurocDataset:
             data_csv=gt_dir / "data.csv",
         )
 
-    def _load_stereo_rectification(self, stereo_params: Path) -> StereoCamera:
+    def _load_stereo_camera(self, stereo_params: Path) -> StereoCamera:
         """Loads data from the stereo rectification YAML file.
         Expected file should match the one used for ORBSLAM"""
         if not stereo_params.exists():
@@ -306,10 +313,10 @@ class EurocDataset:
         return self._load_yaml(yaml_path)
 
     def process_groundtruth(self) -> GroundtruthData | None:
-        if self.groundtruth is None:
+        if self.gt_info is None:
             return None
 
-        data_csv = self.groundtruth.data_csv
+        data_csv = self.gt_info.data_csv
         if not data_csv.exists():
             raise FileNotFoundError(f"Groundtruth CSV not found: {data_csv}")
 
@@ -323,6 +330,7 @@ class EurocDataset:
             data = data.reshape(1, -1)
 
         timestamps = data[:, 0].astype(np.int64)
+        timestemp_to_index = {ts: i for i, ts in enumerate(timestamps)}
         p_rs_r = data[:, 1:4]
         q_rs = data[:, 4:8]
         v_rs_r = data[:, 8:11]
@@ -337,6 +345,7 @@ class EurocDataset:
             T_rs.append(np.vstack([T_rs_top, np.array([0.0, 0.0, 0.0, 1.0])]))
 
         return GroundtruthData(
+            timestamps_to_index=timestemp_to_index,
             timestamps=timestamps,
             p_rs_r=p_rs_r,
             T_rs=np.stack(T_rs),
@@ -344,6 +353,42 @@ class EurocDataset:
             b_w_rs_s=b_w_rs_s,
             b_a_rs_s=b_a_rs_s,
         )
+
+    def get_relative_transform(
+        self, timestamp0, timestamp1, camera_frame=False
+    ) -> np.ndarray:
+        """Get the relative transform between two groundtruth poses by index.
+        If camera_frame is True, the transform is returned in the left camera frame using T_BS. Otherwise, it is returned in the robot body frame.
+        """
+        if self.gt_data is None:
+            raise ValueError("Groundtruth data not loaded.")
+        # Map from timestamps to indices
+        index0 = self.gt_data.timestamps_to_index.get(timestamp0)
+        index1 = self.gt_data.timestamps_to_index.get(timestamp1)
+        if index0 is None:
+            raise KeyError(f"timestamp0 {timestamp0} not found in groundtruth data.")
+        if index1 is None:
+            raise KeyError(f"timestamp1 {timestamp1} not found in groundtruth data.")
+
+        T_rs = self.gt_data.T_rs
+        if index0 < 0 or index0 >= len(T_rs):
+            raise IndexError(f"index0 {index0} out of bounds for groundtruth data.")
+        if index1 < 0 or index1 >= len(T_rs):
+            raise IndexError(f"index1 {index1} out of bounds for groundtruth data.")
+
+        # Compute relative transform from index0 to index1 in the robot frame
+        T_b0_b1 = np.linalg.inv(T_rs[index0]) @ T_rs[index1]
+
+        if camera_frame:
+            # Transform from robot frame to left camera frame using T_BS
+            if self.cam0.sensor.T_bs.size == 0:
+                raise ValueError("T_BS not available in cam0 sensor info.")
+            T_bs = self.cam0.sensor.T_bs
+            T_sb = np.linalg.inv(T_bs)
+            T_s0_s1 = T_sb @ T_b0_b1 @ np.linalg.inv(T_sb)
+            return T_s0_s1
+
+        return T_s0_s1
 
     def plot_groundtruth_trajectory(self, stride: int = 50) -> None:
         if self.gt_data is None:
@@ -410,7 +455,7 @@ class EurocDataset:
     def rectify_image_pair(
         self, img0: np.ndarray, img1: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        if self.stereo_rectification is None:
+        if self.stereo_camera is None:
             raise ValueError("Stereo rectification parameters not loaded.")
 
         rect_img0 = cv2.remap(
@@ -428,52 +473,11 @@ class EurocDataset:
         return rect_img0, rect_img1
 
 
-def get_disparity(
-    img0: np.ndarray, img1: np.ndarray, plot=False, matcher=None
-) -> np.ndarray:
-    if matcher is None:
-        numDisp = 16 * 7 # Number of disparities
-        bs = 9  # Block size
-        # Calculate smooth penalties automatically based on block size
-        p1 = 8 * 1 * bs * bs
-        p2 = 32 * 1 * bs * bs
-        uniq = 3
-        specWin = 100
-        specRange = 2
-        # Setup the matcher
-        matcher = cv2.StereoSGBM_create(
-            minDisparity=0,
-            numDisparities=numDisp,
-            blockSize=bs,
-            P1=p1,
-            P2=p2,
-            disp12MaxDiff=1,
-            uniquenessRatio=uniq,
-            speckleWindowSize=specWin,
-            speckleRange=specRange,
-            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
-        )
-    # Normalize images to 0-255 and convert to uint8
-    img0_norm = cv2.normalize(img0, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    img1_norm = cv2.normalize(img1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    # Compute disparity and rescale to real values
-    disparity = matcher.compute(img0_norm, img1_norm).astype(np.float32) / 16.0
-    # Convert to float and divide by 16 to get true pixel disparity
-    if plot:
-        # Normalize to 0-255 for visualization
-        plt.figure()
-        disparity_visual = cv2.normalize(
-            disparity, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U
-        )
-        plt.imshow(disparity_visual, cmap="jet")
-
-    return disparity
-
-
 def disparity_interactive(ds: EurocDataset, index=1000):
     # Retrieve images
     timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     img_L, img_R = ds.get_image_at_timestamp(timestamp, rectify=True)
+
     # dummy function
     def nothing(x):
         pass
@@ -538,11 +542,12 @@ def disparity_interactive(ds: EurocDataset, index=1000):
 
     cv2.destroyAllWindows()
 
-def make_disparity_plots(ds:EurocDataset, index):
+
+def make_disparity_plots(ds: EurocDataset, index):
     timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     im0_raw, im1_raw = ds.get_image_at_timestamp(timestamp, rectify=False)
     im0_rect, im1_rect = ds.get_image_at_timestamp(timestamp, rectify=True)
-    
+
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     axes[0, 0].imshow(im0_raw, cmap="gray")
     axes[0, 0].set_title("cam0 (raw)")
@@ -551,25 +556,27 @@ def make_disparity_plots(ds:EurocDataset, index):
     axes[0, 1].set_title("cam1 (raw)")
     axes[0, 1].axis("off")
     axes[1, 0].imshow(im0_rect, cmap="gray")
-    axes[1, 0].set_title("cam0 (rectified)")
+    axes[1, 0].set_title("cam0 (rectified) - disparity overlay")
     axes[1, 0].axis("off")
     axes[1, 1].imshow(im1_rect, cmap="gray")
     axes[1, 1].set_title("cam1 (rectified)")
     axes[1, 1].axis("off")
     fig.tight_layout()
 
-    disparity = get_disparity(im0_rect, im1_rect, plot=True)
+    disparity = get_disparity(im0_rect, im1_rect, plot=False)
+    axes[1, 0].imshow(disparity, cmap="jet", alpha=0.5)
     plt.show()
+
 
 if __name__ == "__main__":
     root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
     ds = EurocDataset(root)
     # ds.plot_groundtruth_trajectory()
-    
+
     # Disparity Tuning:
     # disparity_interactive(ds, 2300)
 
     # Disparity Check:
     make_disparity_plots(ds, 2000)
-    
+
     print("done")

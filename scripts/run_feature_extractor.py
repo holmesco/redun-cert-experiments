@@ -30,7 +30,7 @@ if not timestamps:
     raise SystemExit("No images found in Euroc cam0 data mapping")
 
 img0, _ = ds.get_image_at_timestamp(timestamps[1000], rectify=True)
-img1, _ = ds.get_image_at_timestamp(timestamps[1005], rectify=True)
+img1, _ = ds.get_image_at_timestamp(timestamps[1010], rectify=True)
 
 
 def to_tensor(img: np.ndarray) -> torch.Tensor:
@@ -43,7 +43,7 @@ def to_tensor(img: np.ndarray) -> torch.Tensor:
 im0 = to_tensor(img0)
 im1 = to_tensor(img1)
 
-extractor_cfg = FeatureExtractorConfig(device="cpu", max_num_keypoints=256)
+extractor_cfg = FeatureExtractorConfig(device="cpu", max_num_keypoints=1024)
 matcher_cfg = FeatureMatcherConfig(device="cpu", match_threshold=0.1)
 model = FeatureExtractorAndMatcher(extractor_cfg, matcher_cfg)
 
