@@ -1,3 +1,6 @@
+"""This script runs the feature extractor and matcher on a pair of images from
+the Euroc dataset, and visualizes the matches."""
+
 from pathlib import Path
 import sys, os
 
