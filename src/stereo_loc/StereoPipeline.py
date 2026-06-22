@@ -1,21 +1,26 @@
 import torch.nn as nn
 from dataclasses import dataclass
 from enum import Enum
+import torch
 
 from stereo_loc.FeatureExtractorAndMatcher import FeatureExtractorConfig, FeatureMatcherConfig, FeatureExtractorAndMatcher 
 from utils.stereo_camera_model import StereoCameraModel, StereoCameraConfig
-from stereo_loc.ClipperBlock import ClipperBlock, ClipperConfig 
+from stereo_loc.DataAssociationBlocks import DataAssociationBlock, DataAssociationMethod, ClipperBlock, ClipperConfig
+from utils.keypoint_tools import get_inv_cov_weights
 
-def DataAssociationMethod(Enum):
-    CLIPPER = "clipper"
-    RANSAC = "ransac"
+
+
 
 @dataclass
 class StereoPipelineConfig:
     """ Configuration for the stereo pipeline."""
-    
+    # Method for data association. Options: "clipper", "ransac"
     data_association_method: DataAssociationMethod = DataAssociationMethod.CLIPPER
-    
+    # Debug flag for the stereo pipeline. If true, will output additional debug information and visualizations.
+    debug: bool = False
+    # Certification flags
+    certify_data_association: bool = False
+    certify_pose_estimation: bool = False
     # submodule configs
     feature_extractor_config: FeatureExtractorConfig = FeatureExtractorConfig()
     feature_matcher_config: FeatureMatcherConfig = FeatureMatcherConfig()
@@ -39,6 +44,7 @@ class StereoPipeline(nn.Module):
         self.stereo_camera_model = StereoCameraModel(self.config.stereo_camera_config)
         
         # Set up data association
+        self.data_association_module: DataAssociationBlock
         if self.config.data_association_method == DataAssociationMethod.CLIPPER:
             self.data_association_module = ClipperBlock(self.config.clipper_config)
         elif self.config.data_association_method == DataAssociationMethod.RANSAC:
@@ -63,13 +69,23 @@ class StereoPipeline(nn.Module):
         kpt_3D_trg, valid_trg = self.stereo_camera_model.inverse_camera_model(kpt_2D_trg, disparities[1])
         kpt_3D_src = kpt_3D_src.squeeze(0)  # (4,N)
         kpt_3D_trg = kpt_3D_trg.squeeze(0)  # (4,N)
+        # Restrict to valid keypoints
         valid_src = valid_src.squeeze(0).squeeze(0)  # (N,)
         valid_trg = valid_trg.squeeze(0).squeeze(0)  # (N,)
         valid = valid_src & valid_trg  # (N,)
-        # TODO: Call 3D data association using CLIPPER
+        kpt_3D_src = kpt_3D_src[:, valid]  # (4, M)
+        kpt_3D_trg = kpt_3D_trg[:, valid]  # (4, M)
+        # Call 3D data association
+        inliers = self.data_association_module.forward(kpt_3D_src, kpt_3D_trg)
+        # Restrict points to inliers
+        kpt_3D_src_inlier = kpt_3D_src[:, inliers]  # (4, K)
+        kpt_3D_trg_inlier = kpt_3D_trg[:, inliers]  # (4, K) 
+              
+        # Call 3D data association certifier module
+        if self.config.certify_data_association:
+            raise NotImplementedError("Data association certifier not implemented yet.")
         
-        # TODO: Call 3D data association certifier module
-        
-        # TODO: Retrieve matrix weights for each matched point pair
+        # Retrieve matrix weights for each matched point pair
+        weights = get_inv_cov_weights(kpt_3D_src_inlier.unsqueeze(0), torch.ones(1, 1, kpt_3D_src_inlier.size(1)), self.stereo_camera_model, normalize_weights=True)
         
         # TODO: Call pose estimator to get the relative transform between the robot body frame and the camera frame

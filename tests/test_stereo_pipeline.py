@@ -14,13 +14,12 @@ from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureMatcherConfig,
     FeatureExtractorAndMatcher,
 )
-from stereo_loc.ClipperBlock import ClipperBlock, ClipperConfig
+from stereo_loc.DataAssociationBlocks import ClipperBlock, ClipperConfig
 from utils.stereo_camera_model import (
     StereoCameraConfig,
     StereoCameraModel,
     get_disparity,
 )
-
 
 from lightglue import viz2d
 from open3d.io import read_point_cloud

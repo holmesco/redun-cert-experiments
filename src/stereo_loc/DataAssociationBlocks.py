@@ -4,6 +4,10 @@ import torch
 
 import clipperpy
 
+def DataAssociationMethod(Enum):
+    CLIPPER = "clipper"
+    RANSAC = "ransac"
+    
 
 @dataclass
 class ClipperConfig:
