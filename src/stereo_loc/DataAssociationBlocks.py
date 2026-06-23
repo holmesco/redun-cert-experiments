@@ -1,13 +1,40 @@
 from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from enum import Enum
 import numpy as np
 import torch
 
 import clipperpy
 
-def DataAssociationMethod(Enum):
+
+class DataAssociationMethod(Enum):
     CLIPPER = "clipper"
     RANSAC = "ransac"
-    
+
+
+class DataAssociationBlock(ABC):
+    """Data association block that takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
+
+    @abstractmethod
+    def forward(self, kpt_3D_src, kpt_3D_trg) -> torch.Tensor:
+        """Forward pass through the data association block.
+        Args:
+            kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
+            kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
+        Returns:
+            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
+        """
+        pass
+
+    @abstractmethod
+    def get_affinity(self) -> torch.Tensor:
+        """Get the affinity matrix from the data association block.
+        Warning: This should only be called after the forward pass, and will return the affinity matrix for the last pair of keypoints that were passed through the forward pass.
+        Returns:
+            M (torch.Tensor): Affinity matrix, of shape (N, N).
+        """
+        pass
+
 
 @dataclass
 class ClipperConfig:
@@ -24,11 +51,10 @@ class ClipperConfig:
     threshold: float | None = None
 
 
-class ClipperBlock(torch.nn.Module):
+class ClipperBlock(DataAssociationBlock):
     """CLIPPER block for 3D data association. Takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
 
     def __init__(self, config: ClipperConfig):
-        super().__init__()
         # store config
         self.config = config
         # Set up invariant
@@ -79,4 +105,4 @@ class ClipperBlock(torch.nn.Module):
             M (torch.Tensor): Affinity matrix, of shape (N, N).
         """
         M = self.clipper.get_affinity_matrix()
-        return torch.from_numpy(M).double()
+        return torch.from_numpy(M).float()

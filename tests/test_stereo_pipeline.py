@@ -14,12 +14,18 @@ from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureMatcherConfig,
     FeatureExtractorAndMatcher,
 )
+from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig
 from stereo_loc.DataAssociationBlocks import ClipperBlock, ClipperConfig
 from utils.stereo_camera_model import (
     StereoCameraConfig,
     StereoCameraModel,
     get_disparity,
 )
+from stereo_loc.PointCloudRegistrationBlock import (
+    PointCloudRegistrationBlock,
+    PointCloudRegistrationConfig,
+)
+from utils.keypoint_tools import get_inv_cov_weights
 
 from lightglue import viz2d
 from open3d.io import read_point_cloud
@@ -238,8 +244,8 @@ def bunny_stereo_synthetic(plot: bool = False):
         "stereo_image_coords": {
             "frame_1": stereo_img_coords_1,
             "frame_2": stereo_img_coords_2,
-            "stereo_model": stereo_model,
         },
+        "stereo_model": stereo_model,
         "points_1": points_c1,
         "points_2": points_c2,
     }
@@ -358,7 +364,7 @@ def test_3d_point_reconstruction_euroc(euroc_data, plot=True):
             s=10,
             label="frame 0",
         )
-        
+
         ax.scatter(
             kpt_3D_1_in_0[0, inlier_mask].cpu(),
             kpt_3D_1_in_0[1, inlier_mask].cpu(),
@@ -417,3 +423,69 @@ def test_clipper_block(bunny_stereo_synthetic):
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
 
+
+def test_pointcloud_registration(bunny_stereo_synthetic):
+    points_c1 = bunny_stereo_synthetic["points_1"]
+    points_c2 = bunny_stereo_synthetic["points_2"]
+    n_outliers = bunny_stereo_synthetic["n_outliers"]
+
+    # remove outliers from points_c1 and points_c2 for registration
+    points_c1_inliers = torch.Tensor(points_c1[:-n_outliers, :].T).float()
+    points_c2_inliers = torch.Tensor(points_c2[:-n_outliers, :].T).float()
+
+    # Generate matrix weights
+    stereo_cam = bunny_stereo_synthetic["stereo_model"]
+    inv_cov_weights, cov_cam = get_inv_cov_weights(
+        points_c1_inliers.unsqueeze(0),
+        torch.ones((1, 1, points_c1_inliers.shape[1]), dtype=torch.bool),
+        stereo_cam,
+        normalize_weights=True,
+    )
+    # Run PointCloudRegistrationBlock to estimate the relative transform
+    config = PointCloudRegistrationConfig()
+    pcr = PointCloudRegistrationBlock(
+        config, points_c1_inliers, points_c2_inliers, inv_cov_weights.squeeze(0)
+    )
+    T_est, info = pcr.solve_factor_graph(
+        torch.eye(4, dtype=torch.float32), verbose=True
+    )
+    # Check that we are close to the ground truth transform
+    T_gt = bunny_stereo_synthetic["T_21"]
+    T_error = np.linalg.norm(T_est - T_gt)
+    assert (
+        T_error < 0.1
+    ), f"Estimated transform is too far from ground truth: error={T_error:.4f} (should be < 0.1)"
+
+
+def test_stereo_pipeline_no_cert(euroc_data):
+    """Test the full stereo localization pipeline on a pair of Euroc images.
+    No Certification performed."""
+    with torch.no_grad():
+        ds = euroc_data
+        timestamp0 = ds.cam0.timestamps[1000]
+        timestamp1 = ds.cam1.timestamps[1010]
+        T_01 = ds.get_relative_transform(timestamp0, timestamp1, camera_frame=True)
+        im0_L_t, im0_R_t, im0_L, im0_R = get_euroc_stereo_image(euroc_data, timestamp0)
+        im1_L_t, im1_R_t, im1_L, im1_R = get_euroc_stereo_image(euroc_data, timestamp1)
+        images = [im0_L_t.float(), im1_L_t.float()]
+        disp0 = get_disparity(im0_L, im0_R).float().to("cuda")
+        disp1 = get_disparity(im1_L, im1_R).float().to("cuda")
+
+        # Set up config
+        config = StereoPipelineConfig()
+        # Get stereo camera config from dataset
+        config.stereo_camera_config = ds.get_stereo_cam_config()
+        # Set up the stereo pipeline
+        pipeline = StereoPipeline(config)
+        output = pipeline.forward(
+            images=images,
+            disparities=[disp0.float(), disp1.float()],
+            T_init=T_01.astype(np.float32),  # initial guess for the relative transform
+        )
+
+        # Check that the estimated transform is close to the ground truth
+        T_est = output.relative_transform
+        T_error = np.linalg.norm(T_est - T_01)
+        assert (
+            T_error < 0.1
+        ), f"Estimated transform is too far from ground truth: error={T_error:.4f} (should be < 0.1)"
