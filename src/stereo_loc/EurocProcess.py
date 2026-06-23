@@ -27,7 +27,6 @@ class CameraSensorInfo:
     distortion_model: str | None
     distortion_coefficients: np.ndarray
 
-
 @dataclass(frozen=True)
 class CameraInfo:
     path: Path

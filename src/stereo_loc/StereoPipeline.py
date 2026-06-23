@@ -2,6 +2,8 @@ import torch.nn as nn
 from dataclasses import dataclass, field
 from enum import Enum
 import torch
+from omegaconf import OmegaConf
+from pathlib import Path
 
 from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorConfig,
@@ -22,7 +24,6 @@ from stereo_loc.PointCloudRegistrationBlock import (
 )
 
 torch.set_default_dtype(torch.float32)
-
 
 @dataclass
 class StereoPipelineConfig:
@@ -46,6 +47,17 @@ class StereoPipelineConfig:
     registration_config: PointCloudRegistrationConfig = field(
         default_factory=PointCloudRegistrationConfig
     )
+    
+def load_config(override_path: Path | None = None) -> StereoPipelineConfig:
+    # Start with defaults from dataclass
+    config = OmegaConf.structured(StereoPipelineConfig)
+    
+    # Merge overrides if provided
+    if override_path:
+        overrides = OmegaConf.load(override_path)
+        config = OmegaConf.merge(config, overrides)
+    
+    return config
 
 @dataclass
 class StereoPipelineDebugInfo:
@@ -199,3 +211,10 @@ class StereoPipeline:
             output.debug_info = debug_info
 
         return output
+
+if __name__ == "__main__":
+    # Test load config function
+    ROOT = Path(__file__).resolve().parents[2]
+    config_file = ROOT / "configs" / "euroc_certify_reg.yaml"
+    config= load_config(config_file)
+    print(config)

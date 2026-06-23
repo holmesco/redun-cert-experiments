@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
 
 import torch
@@ -10,6 +10,7 @@ from ranktools import (
     LowRankPrecondMethod,
     AnalyticCenterResult,
 )
+from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
 from mat_weight_loc.one_pose_stereo_loc import SinglePoseStereoLocalization
 
 
@@ -20,7 +21,9 @@ class PointCloudRegistrationConfig:
     # Certification flag
     certify: bool = False
     # Analytic centering parameters
-    ac_params: AnalyticCenterParams = AnalyticCenterParams()
+    ac_params: AnalyticCenterParamsConfig = field(
+        default_factory=AnalyticCenterParamsConfig
+    )
     # Verbosity flag for factor graph optimization
     verbose: bool = False
     # Cost adjustment  flag for certification
@@ -58,10 +61,13 @@ class PointCloudRegistrationBlock:
         self, T_init: np.ndarray, verbose: bool = False
     ) -> Tuple[np.ndarray, dict]:
         """Solve the factor graph optimization problem starting from T_init.
-        T_init is assumed to be the transform from the target to source frames, T_src_trg."""
+        T_init is assumed to be the transform from the target to source frames, T_src_trg.
+        """
         # Invert T_init to get the transform from source to target frames, T_trg_src
         T_trg_src_init = np.linalg.inv(T_init)
-        T_trg_src, info = self.localizer.solve_factor_graph(T_init=T_trg_src_init, verbose=verbose)
+        T_trg_src, info = self.localizer.solve_factor_graph(
+            T_init=T_trg_src_init, verbose=verbose
+        )
         # reinvert T_trg_src to get T_src_trg
         T_src_trg = np.linalg.inv(T_trg_src)
         return T_src_trg, info
@@ -71,6 +77,7 @@ class PointCloudRegistrationBlock:
         if not self.config.certify:
             raise ValueError("Certification is not enabled in the configuration.")
         # Set certifier parameters
+        ac_params = self.config.ac_params.to_cpp_class()
         self.localizer.set_certifier_params(self.config.ac_params)
         # Run certification
         result = self.localizer.certify_solution(

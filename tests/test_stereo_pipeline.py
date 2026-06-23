@@ -475,6 +475,9 @@ def test_stereo_pipeline_no_cert(euroc_data):
 
         # Set up config
         config = StereoPipelineConfig()
+        # Turn off certification 
+        config.certify_data_association = False
+        config.registration_config.certify_registration = False
         # Get stereo camera config from dataset
         config.stereo_camera_config = ds.get_stereo_cam_config()
         # Set up the stereo pipeline
