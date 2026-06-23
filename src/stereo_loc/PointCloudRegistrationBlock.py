@@ -72,16 +72,19 @@ class PointCloudRegistrationBlock:
         T_src_trg = np.linalg.inv(T_trg_src)
         return T_src_trg, info
 
-    def certify_single_pose_solution(self, T_est: torch.Tensor) -> AnalyticCenterResult:
+    def certify_solution(self, T_src_trg: np.ndarray) -> AnalyticCenterResult:
         """Certify the solution using the analytic center certificate."""
         if not self.config.certify:
             raise ValueError("Certification is not enabled in the configuration.")
+        # Invert solution to get T_trg_src for certification
+        T_trg_src = np.linalg.inv(T_src_trg)
+        # Convert dataclass params to C++ wrapper config class
+        ac_params: AnalyticCenterParams = self.config.ac_params.to_cpp_class()
         # Set certifier parameters
-        ac_params = self.config.ac_params.to_cpp_class()
-        self.localizer.set_certifier_params(self.config.ac_params)
+        self.localizer.set_certifier_params(ac_params)
         # Run certification
-        result = self.localizer.certify_solution(
-            T_est=T_est.to("cpu").double().numpy(),
+        result = self.localizer.certify_single_pose_solution(
+            T_est=T_trg_src,
             verbose=self.config.verbose,
             adjust_cost=self.config.adjust_cost,
         )

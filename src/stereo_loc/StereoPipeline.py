@@ -25,6 +25,7 @@ from stereo_loc.PointCloudRegistrationBlock import (
 
 torch.set_default_dtype(torch.float32)
 
+
 @dataclass
 class StereoPipelineConfig:
     """Configuration for the stereo pipeline."""
@@ -47,17 +48,19 @@ class StereoPipelineConfig:
     registration_config: PointCloudRegistrationConfig = field(
         default_factory=PointCloudRegistrationConfig
     )
-    
+
+
 def load_config(override_path: Path | None = None) -> StereoPipelineConfig:
     # Start with defaults from dataclass
     config = OmegaConf.structured(StereoPipelineConfig)
-    
+
     # Merge overrides if provided
     if override_path:
         overrides = OmegaConf.load(override_path)
         config = OmegaConf.merge(config, overrides)
-    
-    return config
+
+    return OmegaConf.to_object(config)
+
 
 @dataclass
 class StereoPipelineDebugInfo:
@@ -71,6 +74,7 @@ class StereoPipelineDebugInfo:
     inliers: torch.Tensor = None
     # Inverse covariance weights for each matched point pair, of shape (N, 3, 3).
     inv_cov_weights: torch.Tensor = None
+
 
 @dataclass
 class StereoPipelineOutput:
@@ -186,7 +190,7 @@ class StereoPipeline:
         # Certify solution
         registration_certified = True
         if self.config.registration_config.certify:
-            cert_result = registration_block.certify_single_pose_solution(T_est)
+            cert_result = registration_block.certify_solution(T_est)
             if self.config.debug:
                 print(f"Certification result: {cert_result}")
 
@@ -212,9 +216,10 @@ class StereoPipeline:
 
         return output
 
+
 if __name__ == "__main__":
     # Test load config function
     ROOT = Path(__file__).resolve().parents[2]
     config_file = ROOT / "configs" / "euroc_certify_reg.yaml"
-    config= load_config(config_file)
+    config = load_config(config_file)
     print(config)

@@ -15,7 +15,7 @@ from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureMatcherConfig,
     FeatureExtractorAndMatcher,
 )
-from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig
+from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
 from stereo_loc.DataAssociationBlocks import ClipperBlock, ClipperConfig
 from utils.stereo_camera_model import (
     StereoCameraConfig,
@@ -35,6 +35,7 @@ from matplotlib import pyplot as plt
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
+config_file = ROOT / "configs" / "test_config.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -127,7 +128,7 @@ def bunny_stereo_synthetic(plot: bool = False):
 
     T_w_c1 = _make_camera_transform(c1)
     T_w_c2 = _make_camera_transform(c2)
-    T_21 = np.linalg.inv(T_w_c2) @ T_w_c1
+    T_12 = np.linalg.inv(T_w_c1) @ T_w_c2
 
     outlier_scale = max(z_extent, 1.0)
     outliers_1 = centroid + rng.uniform(
@@ -240,7 +241,7 @@ def bunny_stereo_synthetic(plot: bool = False):
         plt.show()
 
     return {
-        "T_21": T_21,
+        "T_12": T_12,
         "n_outliers": n_outliers,
         "stereo_image_coords": {
             "frame_1": stereo_img_coords_1,
@@ -444,6 +445,7 @@ def test_pointcloud_registration(bunny_stereo_synthetic):
     )
     # Run PointCloudRegistrationBlock to estimate the relative transform
     config = PointCloudRegistrationConfig()
+    config.certify = True
     pcr = PointCloudRegistrationBlock(
         config, points_c1_inliers, points_c2_inliers, inv_cov_weights.squeeze(0)
     )
@@ -451,21 +453,27 @@ def test_pointcloud_registration(bunny_stereo_synthetic):
         torch.eye(4, dtype=torch.float32), verbose=True
     )
     # Check that we are close to the ground truth transform
-    T_gt = bunny_stereo_synthetic["T_21"]
+    T_gt = bunny_stereo_synthetic["T_12"]
     T_error = np.linalg.norm(T_est - T_gt)
     assert (
         T_error < 0.1
     ), f"Estimated transform is too far from ground truth: error={T_error:.4f} (should be < 0.1)"
 
+    # Test the certification step if enabled
+    result = pcr.certify_solution(T_est)
+    assert (
+        result.certified
+    ), "The estimated transform failed certification, but it should have passed."
 
-def test_stereo_pipeline_no_cert(euroc_data):
+
+def test_stereo_pipeline(euroc_data):
     """Test the full stereo localization pipeline on a pair of Euroc images.
     No Certification performed."""
     with torch.no_grad():
         ds = euroc_data
         # Compute transform for one step
         timestamp0 = ds.cam0.timestamps[1000]
-        timestamp1 = ds.cam1.timestamps[1001]
+        timestamp1 = ds.cam1.timestamps[1010]
         T_01 = ds.get_relative_transform(timestamp0, timestamp1, camera_frame=True)
         im0_L_t, im0_R_t, im0_L, im0_R = get_euroc_stereo_image(ds, timestamp0)
         im1_L_t, im1_R_t, im1_L, im1_R = get_euroc_stereo_image(ds, timestamp1)
@@ -473,11 +481,10 @@ def test_stereo_pipeline_no_cert(euroc_data):
         disp0 = get_disparity(im0_L, im0_R).float().to("cuda")
         disp1 = get_disparity(im1_L, im1_R).float().to("cuda")
 
-        # Set up config
-        config = StereoPipelineConfig()
-        # Turn off certification 
+        # Load Test config
+        config = load_config(config_file)
+        # Turn off certification
         config.certify_data_association = False
-        config.registration_config.certify_registration = False
         # Get stereo camera config from dataset
         config.stereo_camera_config = ds.get_stereo_cam_config()
         # Set up the stereo pipeline
@@ -501,3 +508,7 @@ def test_stereo_pipeline_no_cert(euroc_data):
         assert (
             rot_error < 0.01
         ), f"Estimated rotation error is too large: {rot_error:.4f} (should be < 0.1)"
+        # Check registration certification status
+        assert (
+            output.registration_certified is True
+        ), "Registration should be certified when certification is disabled."

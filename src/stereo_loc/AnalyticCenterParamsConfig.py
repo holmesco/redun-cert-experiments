@@ -42,7 +42,7 @@ class LowRankPrecondParamsConfig:
     def to_cpp_class(self) -> LowRankPrecondParams:
         params = LowRankPrecondParams()
         params.tau = self.tau
-        params.method = RankToolsLowRankPrecondMethod[self.method.name]
+        params.method = RankToolsLowRankPrecondMethod.__dict__[self.method.name]
         params.use_approx = self.use_approx
         params.ldlt_zero_thresh = self.ldlt_zero_thresh
         return params
@@ -146,7 +146,7 @@ class AnalyticCenterParamsConfig:
         params.max_iter = self.max_iter
         params.rescale_lin_sys = self.rescale_lin_sys
         params.rescaling_factor = self.rescaling_factor
-        params.lin_solver = RankToolsLinearSolverType[self.lin_solver.name]
+        params.lin_solver = RankToolsLinearSolverType.__dict__[self.lin_solver.name]
         params.reuse_multipliers = self.reuse_multipliers
 
         # Linear Independence Check
