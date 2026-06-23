@@ -4,6 +4,7 @@ import pytest
 import torch
 import numpy as np
 import os
+from pylgmath import Transformation
 
 # Ensure plotting uses the desired X display (useful in headless CI/devcontainer)
 os.environ["DISPLAY"] = ":32"
@@ -462,11 +463,12 @@ def test_stereo_pipeline_no_cert(euroc_data):
     No Certification performed."""
     with torch.no_grad():
         ds = euroc_data
+        # Compute transform for one step
         timestamp0 = ds.cam0.timestamps[1000]
-        timestamp1 = ds.cam1.timestamps[1010]
+        timestamp1 = ds.cam1.timestamps[1001]
         T_01 = ds.get_relative_transform(timestamp0, timestamp1, camera_frame=True)
-        im0_L_t, im0_R_t, im0_L, im0_R = get_euroc_stereo_image(euroc_data, timestamp0)
-        im1_L_t, im1_R_t, im1_L, im1_R = get_euroc_stereo_image(euroc_data, timestamp1)
+        im0_L_t, im0_R_t, im0_L, im0_R = get_euroc_stereo_image(ds, timestamp0)
+        im1_L_t, im1_R_t, im1_L, im1_R = get_euroc_stereo_image(ds, timestamp1)
         images = [im0_L_t.float(), im1_L_t.float()]
         disp0 = get_disparity(im0_L, im0_R).float().to("cuda")
         disp1 = get_disparity(im1_L, im1_R).float().to("cuda")
@@ -477,17 +479,22 @@ def test_stereo_pipeline_no_cert(euroc_data):
         config.stereo_camera_config = ds.get_stereo_cam_config()
         # Set up the stereo pipeline
         pipeline = StereoPipeline(config)
-        # Init and run
-        T_init = torch.tensor(T_01, dtype=torch.float32, device="cpu")  # initial guess for the relative transform
+        # Initialize with ground truth transform
+        T_src_trg_gt = Transformation(T_ba=T_01)
         output = pipeline.forward(
             images=images,
             disparities=[disp0.float(), disp1.float()],
-            T_init=T_init,  # initial guess for the relative transform
+            T_init=T_src_trg_gt.matrix(),  # initial guess for the relative transform
         )
 
         # Check that the estimated transform is close to the ground truth
-        T_est = output.relative_transform
-        T_error = np.linalg.norm(T_est - T_01)
+        T_src_trg = Transformation(T_ba=output.relative_transform)
+        xi_error = (T_src_trg.inverse() @ T_src_trg_gt).vec()
+        trans_error = np.linalg.norm(xi_error[:3])
+        rot_error = np.linalg.norm(xi_error[3:])
         assert (
-            T_error < 0.1
-        ), f"Estimated transform is too far from ground truth: error={T_error:.4f} (should be < 0.1)"
+            trans_error < 0.1
+        ), f"Estimated translation error is too large: {trans_error:.4f} (should be < 0.1)"
+        assert (
+            rot_error < 0.01
+        ), f"Estimated rotation error is too large: {rot_error:.4f} (should be < 0.1)"

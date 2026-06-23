@@ -66,7 +66,8 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
             self.add_constraints()
 
     def solve_factor_graph(self, T_init: np.ndarray, verbose: bool = False):
-        """Solve the factor graph optimization problem starting from T_init."""
+        """Solve the factor graph optimization problem starting from T_init.
+        Estimated and initialized poses are transformations from source frame to target, i.e. T_trg_src."""
         # Build initial values
         initial_values = gtsam.Values()
         initial_values.insert(

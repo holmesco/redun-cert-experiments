@@ -47,6 +47,18 @@ class StereoPipelineConfig:
         default_factory=PointCloudRegistrationConfig
     )
 
+@dataclass
+class StereoPipelineDebugInfo:
+    """Debug information for the stereo pipeline."""
+
+    # Matched keypoints in pixel coordinates, of shape (2, N, 2).
+    keypoints_2D: torch.Tensor = None
+    # 3D keypoints in the sensor frame (left camera frame) given in homogeneous coordinates, of shape (2, 4, N).
+    keypoints_3D: torch.Tensor = None
+    # Inliers from the data association step, of shape (N,).
+    inliers: torch.Tensor = None
+    # Inverse covariance weights for each matched point pair, of shape (N, 3, 3).
+    inv_cov_weights: torch.Tensor = None
 
 @dataclass
 class StereoPipelineOutput:
@@ -59,6 +71,8 @@ class StereoPipelineOutput:
     registration_certified: bool = False
     # Additional information from the registration block, such as the number of inliers, etc.
     registration_info: dict = None
+    # Debug information for the stereo pipeline.
+    debug_info: StereoPipelineDebugInfo | None = None
 
 
 class StereoPipeline:
@@ -95,6 +109,7 @@ class StereoPipeline:
         Args:
             images (list of torch.Tensor): List of two rectified images corresponding to the differen poses, each of shape (C, H, W).
             disparities (list of torch.Tensor): List of two disparity maps corresponding to the stereo images, each of shape (H, W).
+            T_init (torch.Tensor): Initial guess for the relative transform from the target to the source frames, T_src_trg, of shape (4, 4).
         Returns:
             relative_transform (torch.Tensor): Relative transform between the robot body frame and the camera frame, of shape (4, 4).
         """
@@ -163,9 +178,24 @@ class StereoPipeline:
             if self.config.debug:
                 print(f"Certification result: {cert_result}")
 
-        return StereoPipelineOutput(
+        # Generate standard output
+        output = StereoPipelineOutput(
             relative_transform=T_est,  # (4, 4)
             data_association_certified=data_association_certified,
             registration_certified=registration_certified,
             registration_info=info,
         )
+
+        # Generate debug output if requested
+        if self.config.debug:
+            debug_info = StereoPipelineDebugInfo(
+                keypoints_2D=torch.stack(
+                    [kpt_2D_src.squeeze(0), kpt_2D_trg.squeeze(0)], dim=0
+                ),  # (2, N, 2)
+                keypoints_3D=torch.stack([kpt_3D_src, kpt_3D_trg], dim=0),  # (2, 4, N)
+                inliers=inliers,  # (N,)
+                inv_cov_weights=inv_cov_weights.squeeze(0),  # (K, 3, 3)
+            )
+            output.debug_info = debug_info
+
+        return output
