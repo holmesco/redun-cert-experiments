@@ -13,7 +13,6 @@ from utils.lie_algebra import se3_exp
 from mwcerts.cert_factor_graph import LocalizationFactorGraph
 
 
-
 def set_seed(x):
     np.random.seed(x)
     torch.manual_seed(x)
@@ -29,9 +28,9 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         self,
         keypoints_3D_src: np.ndarray,
         keypoints_3D_trg: np.ndarray,
-        weights: np.ndarray,
         inv_cov_weights: np.ndarray,
-        T_s_v: np.ndarray | None = None,
+        certify: bool = True,
+        T_s_v: np.ndarray | None = None,  # TODO remove since not used anywhere
     ):
 
         super().__init__()
@@ -45,14 +44,11 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         assert (
             keypoints_3D_src.shape[1] == keypoints_3D_trg.shape[1]
         ), "keypoints_3D_src and keypoints_3D_trg should have the same shape"
-        assert (
-            weights.shape == keypoints_3D_src.shape[1:]
-        ), "weights should have shape (N_map,)"
-        assert T_s_v.shape == (4, 4), "T_s_v should have shape (4, 4)"
         self.keypoints_3D_src = keypoints_3D_src
         self.keypoints_3D_trg = keypoints_3D_trg
         if T_s_v is None:
             T_s_v = np.eye(4)
+        assert T_s_v.shape == (4, 4), "T_s_v should have shape (4, 4)"
         self.T_s_v = T_s_v
         self.N_map = keypoints_3D_src.shape[1]
         self.T_trg_src = None
@@ -66,9 +62,9 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         )
 
         # Add constraints
-        self.add_constraints()
+        if certify:
+            self.add_constraints()
 
-        
     def solve_factor_graph(self, T_init: np.ndarray, verbose: bool = False):
         """Solve the factor graph optimization problem starting from T_init."""
         # Build initial values
@@ -85,8 +81,9 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
         info = {"cost": cost, "time": time}
         return T_est, info
 
-
-    def certify_single_pose_solution(self, T_est: np.ndarray, verbose=False, adjust_cost=True):
+    def certify_single_pose_solution(
+        self, T_est: np.ndarray, verbose=False, adjust_cost=True
+    ):
         """Certify a single pose solution."""
         values = gtsam.Values()
         values.insert(
@@ -97,8 +94,8 @@ class SinglePoseStereoLocalization(LocalizationFactorGraph):
             values, verbose=verbose, adjust_cost=adjust_cost
         )
         return cert_result
-    
-    
+
+
 def sim_single_pose_localization(
     N_map: int = 50,
     device: str = "cpu",
@@ -168,7 +165,6 @@ def sim_single_pose_localization(
     stereo_loc = SinglePoseStereoLocalization(
         keypoints_3D_src=src_coords[0, :3, :].cpu().numpy(),
         keypoints_3D_trg=cam_coords[0, :3, :].cpu().numpy(),
-        weights=weights[0, 0, :].cpu().numpy(),
         inv_cov_weights=inv_cov_weights,
         T_s_v=T_s_v,
     )

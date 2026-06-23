@@ -39,9 +39,9 @@ class PointCloudRegistrationBlock:
         self.config = config
         # Move to cpu and switch to double precision
         # NOTE: single precision was causing some issues with symmetry checks.
-        self.keypoints_3D_src = keypoints_3D_src.to("cpu").double().numpy()
-        self.keypoints_3D_trg = keypoints_3D_trg.to("cpu").double().numpy()
-        self.inv_cov_weights = inv_cov_weights.to("cpu").double().numpy()
+        self.keypoints_3D_src = keypoints_3D_src.to("cpu").float().numpy()
+        self.keypoints_3D_trg = keypoints_3D_trg.to("cpu").float().numpy()
+        self.inv_cov_weights = inv_cov_weights.to("cpu").float().numpy()
 
         # Create instance of the SinglePoseStereoLocalization class
         self.localizer = SinglePoseStereoLocalization(

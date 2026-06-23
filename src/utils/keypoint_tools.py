@@ -131,7 +131,9 @@ def get_keypoint_info(kpt_2D, scores_map, descriptors_map, disparity, stereo_cam
     return kpt_3D, valid, kpt_desc_norm, kpt_scores
 
 
-def get_inv_cov_weights(kpt_3D, valid, stereo_cam: StereoCameraModel, normalize_weights=True):
+def get_inv_cov_weights(
+    kpt_3D, valid, stereo_cam: StereoCameraModel, normalize_weights=True
+):
     """Generate the inverse covariance weights for each keypoint, based on stereo
     camera model.
 
@@ -145,9 +147,9 @@ def get_inv_cov_weights(kpt_3D, valid, stereo_cam: StereoCameraModel, normalize_
     """
     B = kpt_3D.size(0)  # Batch size
     N = kpt_3D.size(2)  # Number of keypoints
-    f = stereo_cam.f_tensor
-    b = stereo_cam.b_tensor
-    cov_pxl = stereo_cam.cov_pxl
+    f = stereo_cam.f_tensor.to(kpt_3D.device)
+    b = stereo_cam.b_tensor.to(kpt_3D.device)
+    cov_pxl = stereo_cam.cov_pxl.to(kpt_3D.device)
     zero = torch.zeros(B, N, device=kpt_3D.device, dtype=kpt_3D.dtype)
 
     # Define linearized covariance transformation matrix
@@ -176,4 +178,6 @@ def get_inv_cov_weights(kpt_3D, valid, stereo_cam: StereoCameraModel, normalize_
         batch_trace = torch.vmap(torch.vmap(torch.trace))
         factor = torch.mean(batch_trace(W), dim=1)
         W = W / factor[:, None, None, None]
+    # Symmetrize
+    W = 0.5 * (W + W.transpose(-2, -1))
     return W, cov_cam

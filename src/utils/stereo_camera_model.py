@@ -10,14 +10,15 @@ from matplotlib import pyplot as plt
 Original source code: git@github.com:utiasASRL/deep_learned_visual_features.git
 Branch: mat-weight-sdp-version
 """
+torch.set_default_dtype(torch.float32)
 
 
 @dataclass(frozen=True)
 class StereoCameraConfig:
-    cu: float
-    cv: float
-    f: float
-    b: float
+    cu: float = 0.0
+    cv: float = 0.0
+    f: float = 1.0
+    b: float = 1.0
     sigma: float = 0.5
     debug: bool = False
 
@@ -49,7 +50,8 @@ class StereoCameraModel(nn.Module):
                 [1.0, 0.0, 1.0],
                 [0.0, 1.0, 0.0],
                 [1.0, 0.0, 2.0],
-            ]
+            ],
+            dtype=torch.float32,
         ) * (self.sigma**2)
 
         # Matrices for camera model needed to projecting/reprojecting between the camera and image frames
@@ -91,7 +93,8 @@ class StereoCameraModel(nn.Module):
                 [0.0, self.f, self.cv, 0.0],
                 [self.f, 0.0, self.cu, -(self.f * self.b)],
                 [0.0, self.f, self.cv, 0.0],
-            ]
+            ],
+            dtype=torch.float32,
         )
 
         # Matrix needed to transform image coordinates into 3D points.
@@ -108,7 +111,8 @@ class StereoCameraModel(nn.Module):
                 [0.0, self.b, 0.0, -(self.b * self.cv)],
                 [0.0, 0.0, 0.0, self.f * self.b],
                 [0.0, 0.0, 1.0, 0.0],
-            ]
+            ],
+            dtype=torch.float32,
         )
 
         return M, Q
@@ -336,7 +340,7 @@ def get_disparity(
             disparity, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U
         )
         plt.imshow(disparity_visual, cmap="jet")
-        
-    disparity  = torch.from_numpy(disparity).unsqueeze(0).float()
+
+    disparity = torch.from_numpy(disparity).unsqueeze(0).float()
 
     return disparity

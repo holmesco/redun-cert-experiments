@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from scipy.spatial.transform import Rotation, RigidTransform
 import cv2
 
-from utils.stereo_camera_model import get_disparity
+from utils.stereo_camera_model import get_disparity, StereoCameraConfig
 
 
 @dataclass(frozen=True)
@@ -389,6 +389,19 @@ class EurocDataset:
             return T_s0_s1
 
         return T_s0_s1
+    
+    def get_stereo_cam_config(self, sigma=0.5) -> StereoCameraConfig:
+        """Returns a StereoCameraConfig object based on the loaded stereo camera parameters."""
+        if self.stereo_camera is None:
+            raise ValueError("Stereo camera parameters not loaded.")
+
+        return StereoCameraConfig(
+            cu=self.stereo_camera.camera_cx,
+            cv=self.stereo_camera.camera_cy,
+            f=self.stereo_camera.camera_fx,
+            b=self.stereo_camera.camera_bf / self.stereo_camera.camera_fx,
+            sigma=sigma,  # Assuming a default sigma value; adjust as needed
+        )
 
     def plot_groundtruth_trajectory(self, stride: int = 50) -> None:
         if self.gt_data is None:

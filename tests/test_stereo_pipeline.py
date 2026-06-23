@@ -477,10 +477,12 @@ def test_stereo_pipeline_no_cert(euroc_data):
         config.stereo_camera_config = ds.get_stereo_cam_config()
         # Set up the stereo pipeline
         pipeline = StereoPipeline(config)
+        # Init and run
+        T_init = torch.tensor(T_01, dtype=torch.float32, device="cpu")  # initial guess for the relative transform
         output = pipeline.forward(
             images=images,
             disparities=[disp0.float(), disp1.float()],
-            T_init=T_01.astype(np.float32),  # initial guess for the relative transform
+            T_init=T_init,  # initial guess for the relative transform
         )
 
         # Check that the estimated transform is close to the ground truth
