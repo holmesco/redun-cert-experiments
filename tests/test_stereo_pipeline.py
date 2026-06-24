@@ -16,7 +16,7 @@ from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorAndMatcher,
 )
 from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
-from stereo_loc.DataAssociationBlocks import ClipperBlock, ClipperConfig
+from stereo_loc.DataAssociationBlocks import ClipperBlock, DataAssociationConfig
 from utils.stereo_camera_model import (
     StereoCameraConfig,
     StereoCameraModel,
@@ -343,7 +343,7 @@ def test_3d_point_reconstruction_euroc(euroc_data, plot=True):
     ), f"Expected at least 10 inliers within {tolerance}m, but got {num_inliers}"
 
     # Run Clipper block to test data association on the reconstructed 3D points. We expect most of the valid matches to be inliers, and the outliers to be rejected.
-    clipper_cfg = ClipperConfig()
+    clipper_cfg = DataAssociationConfig()
     clipper_cfg.invariant_epsilon = (
         0.2  # set epsilon to 20 cm to account for noise in the reconstructed 3D points
     )
@@ -405,17 +405,14 @@ def test_3d_point_reconstruction_euroc(euroc_data, plot=True):
 
 
 def test_clipper_block(bunny_stereo_synthetic):
-    # T_21 = bunny_stereo_synthetic["T_21"]
-    # stereo_img_coords_1 = bunny_stereo_synthetic["stereo_image_coords"]["frame_1"]
-    # stereo_img_coords_2 = bunny_stereo_synthetic["stereo_image_coords"]["frame_2"]
-    # stereo_model = bunny_stereo_synthetic["stereo_image_coords"]["stereo_model"]
+
     points_c1 = bunny_stereo_synthetic["points_1"]
     points_c2 = bunny_stereo_synthetic["points_2"]
     n_outliers = bunny_stereo_synthetic["n_outliers"]
 
     # Instantiate CLIPPER block
-    clipper_cfg = ClipperConfig()
-    clipper_block = ClipperBlock(clipper_cfg)
+    config = DataAssociationConfig()
+    clipper_block = ClipperBlock(config)
     inliers = clipper_block.forward(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
@@ -424,6 +421,10 @@ def test_clipper_block(bunny_stereo_synthetic):
     assert (
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
+    # Test certification
+    result = clipper_block.certify_solution(inliers, check_constraints=True)
+    assert result.certified, "Certifier could not certify solution"
+    assert False
 
 
 def test_pointcloud_registration(bunny_stereo_synthetic):
@@ -483,8 +484,6 @@ def test_stereo_pipeline(euroc_data):
 
         # Load Test config
         config = load_config(config_file)
-        # Turn off certification
-        config.certify_data_association = False
         # Get stereo camera config from dataset
         config.stereo_camera_config = ds.get_stereo_cam_config()
         # Set up the stereo pipeline

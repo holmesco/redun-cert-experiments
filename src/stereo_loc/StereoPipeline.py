@@ -15,7 +15,7 @@ from stereo_loc.DataAssociationBlocks import (
     DataAssociationBlock,
     DataAssociationMethod,
     ClipperBlock,
-    ClipperConfig,
+    DataAssociationConfig,
 )
 from utils.keypoint_tools import get_inv_cov_weights
 from stereo_loc.PointCloudRegistrationBlock import (
@@ -44,7 +44,7 @@ class StereoPipelineConfig:
         default_factory=FeatureMatcherConfig
     )
     stereo_camera_config: StereoCameraConfig = field(default_factory=StereoCameraConfig)
-    clipper_config: ClipperConfig = field(default_factory=ClipperConfig)
+    data_association_config: DataAssociationConfig = field(default_factory=DataAssociationConfig)
     registration_config: PointCloudRegistrationConfig = field(
         default_factory=PointCloudRegistrationConfig
     )
@@ -110,7 +110,7 @@ class StereoPipeline:
         # Set up data association
         self.data_association_module: DataAssociationBlock
         if self.config.data_association_method == DataAssociationMethod.CLIPPER:
-            self.data_association_module = ClipperBlock(self.config.clipper_config)
+            self.data_association_module = ClipperBlock(self.config.data_association_config)
         elif self.config.data_association_method == DataAssociationMethod.RANSAC:
             raise NotImplementedError("RANSAC data association not implemented yet.")
         else:

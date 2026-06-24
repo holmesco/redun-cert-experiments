@@ -25,3 +25,25 @@ registration_config:
     # Adaptive perturbation
     adaptive_perturb: False
     eps_mult_min: 1e-3
+data_association_config:
+  certify: True
+  # Analytic Centering parameters
+  ac_params:
+    verbose: True
+    lin_solver: MFCG_LRP
+    lin_solve_max_iter: 200
+    lin_solve_tol: 1e-3
+    delta: 1e-7
+    eps_cost: 1e-5
+    eps_mult_min: 1e-8
+    rescale_lin_sys: False
+    perturb_constraints: False
+    perturb_cost: True
+    adaptive_perturb: True
+    lrp_params:
+      tau: 1e-5
+      method: SparseLDLT
+    early_stop_angle: True
+    early_stop_cert: True
+    max_angle: 1e-3
+    max_iter: 20

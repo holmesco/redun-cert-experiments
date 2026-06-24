@@ -117,6 +117,7 @@ def generate_dataset(pcfile, m, n1, n2o, outrat, sigma, T_21):
             
         return (clipper, Agt)
 
+# TODO: This class should be replaced wiht the stereo localization data association blocks
 class MaxCliqueProblem:
     def __init__(self, clipper, threshold=0.0, params: AnalyticCenterParams = None):
         self.clipper = clipper
