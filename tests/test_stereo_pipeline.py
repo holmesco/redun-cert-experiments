@@ -16,7 +16,12 @@ from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorAndMatcher,
 )
 from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
-from stereo_loc.DataAssociationBlocks import ClipperBlock, DataAssociationConfig
+from stereo_loc.DataAssociationBlocks import (
+    ClipperBlock,
+    ClipperSDPBlock,
+    DataAssociationConfig,
+)
+from stereo_loc.AnalyticCenterParamsConfig import LinearSolverType
 from utils.stereo_camera_model import (
     StereoCameraConfig,
     StereoCameraModel,
@@ -98,7 +103,7 @@ def _project_stereo_points(
 
 
 @pytest.fixture(scope="module")
-def bunny_stereo_synthetic(plot: bool = False):
+def bunny_stereo_synthetic():
     """Load points from bun10k.ply, create two z-offset cameras, and project stereo image coords."""
 
     pcfile = ROOT / "data" / "bun10k.ply"
@@ -110,12 +115,12 @@ def bunny_stereo_synthetic(plot: bool = False):
     if points.shape[0] == 0:
         pytest.skip(f"No points found in {pcfile}")
 
-    num_points = min(100, points.shape[0])
+    num_points = min(50, points.shape[0])
     rng = np.random.default_rng(0)
     sample_idx = rng.choice(points.shape[0], size=num_points, replace=False)
     sampled_points = points[sample_idx]
 
-    n_outliers = 2
+    n_outliers = 20
 
     centroid = sampled_points.mean(axis=0)
     z_extent = float(np.max(sampled_points[:, 2]) - np.min(sampled_points[:, 2]))
@@ -130,15 +135,17 @@ def bunny_stereo_synthetic(plot: bool = False):
     T_w_c2 = _make_camera_transform(c2)
     T_12 = np.linalg.inv(T_w_c1) @ T_w_c2
 
-    outlier_scale = max(z_extent, 1.0)
-    outliers_1 = centroid + rng.uniform(
-        low=-4.0 * outlier_scale,
-        high=4.0 * outlier_scale,
+    outlier_scale = 10.0
+    centroid_1 = centroid + np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    outliers_1 = centroid_1 + rng.uniform(
+        low=-outlier_scale,
+        high=outlier_scale,
         size=(n_outliers, 3),
     )
-    outliers_2 = centroid + rng.uniform(
-        low=-4.0 * outlier_scale,
-        high=4.0 * outlier_scale,
+    centroid_2 = centroid + np.array([0.0, -0.5, 0.0], dtype=np.float32)
+    outliers_2 = centroid_2 + rng.uniform(
+        low=-outlier_scale,
+        high=outlier_scale,
         size=(n_outliers, 3),
     )
 
@@ -160,86 +167,6 @@ def bunny_stereo_synthetic(plot: bool = False):
     stereo_img_coords_1 = _project_stereo_points(stereo_model, points_c1)
     stereo_img_coords_2 = _project_stereo_points(stereo_model, points_c2)
 
-    if plot:
-        # Plot the sampled 3D points from the perspective of each camera frame.
-        fig1 = plt.figure()
-        ax1 = fig1.add_subplot(111, projection="3d")
-        ax1.scatter(
-            points_c1[:, 0],
-            points_c1[:, 1],
-            points_c1[:, 2],
-            c="blue",
-            s=10,
-            label="frame 1",
-        )
-        ax1.set_title("Bunny points in camera frame 1")
-        ax1.set_xlabel("x")
-        ax1.set_ylabel("y")
-        ax1.set_zlabel("z")
-        ax1.legend()
-
-        fig2 = plt.figure()
-        ax2 = fig2.add_subplot(111, projection="3d")
-        ax2.scatter(
-            points_c2[:, 0],
-            points_c2[:, 1],
-            points_c2[:, 2],
-            c="red",
-            s=10,
-            label="frame 2",
-        )
-        ax2.set_title("Bunny points in camera frame 2")
-        ax2.set_xlabel("x")
-        ax2.set_ylabel("y")
-        ax2.set_zlabel("z")
-        ax2.legend()
-
-        # Plot stereo views as subplots in a single figure.
-        fig3, axes = plt.subplots(1, 2, figsize=(12, 5))
-        stereo_views = [
-            (stereo_img_coords_1, "frame 1"),
-            (stereo_img_coords_2, "frame 2"),
-        ]
-        all_u = np.concatenate(
-            [
-                stereo_img_coords_1[[0, 2], :].ravel(),
-                stereo_img_coords_2[[0, 2], :].ravel(),
-            ]
-        )
-        all_v = np.concatenate(
-            [
-                stereo_img_coords_1[[1, 3], :].ravel(),
-                stereo_img_coords_2[[1, 3], :].ravel(),
-            ]
-        )
-        u_min, u_max = float(np.min(all_u)), float(np.max(all_u))
-        v_min, v_max = float(np.min(all_v)), float(np.max(all_v))
-        for ax, (stereo_coords, title) in zip(axes, stereo_views):
-            ax.scatter(
-                stereo_coords[0, :],
-                stereo_coords[1, :],
-                c="blue",
-                s=10,
-                label="left",
-            )
-            ax.scatter(
-                stereo_coords[2, :],
-                stereo_coords[3, :],
-                c="red",
-                s=10,
-                label="right",
-            )
-            ax.set_xlim(u_min, u_max)
-            ax.set_ylim(v_max, v_min)
-            ax.set_aspect("equal", adjustable="box")
-            ax.set_title(f"Stereo image coordinates for {title}")
-            ax.set_xlabel("u")
-            ax.set_ylabel("v")
-            ax.legend()
-
-        fig3.tight_layout()
-        plt.show()
-
     return {
         "T_12": T_12,
         "n_outliers": n_outliers,
@@ -251,6 +178,92 @@ def bunny_stereo_synthetic(plot: bool = False):
         "points_1": points_c1,
         "points_2": points_c2,
     }
+
+
+def test_plot_bunny_fixture(bunny_stereo_synthetic):
+    points_c1 = bunny_stereo_synthetic["points_1"]
+    points_c2 = bunny_stereo_synthetic["points_2"]
+    stereo_img_coords_1 = bunny_stereo_synthetic["stereo_image_coords"]["frame_1"]
+    stereo_img_coords_2 = bunny_stereo_synthetic["stereo_image_coords"]["frame_2"]
+
+    # Plot the sampled 3D points from the perspective of each camera frame.
+    fig1 = plt.figure()
+    ax1 = fig1.add_subplot(111, projection="3d")
+    ax1.scatter(
+        points_c1[:, 0],
+        points_c1[:, 1],
+        points_c1[:, 2],
+        c="blue",
+        s=10,
+        label="frame 1",
+    )
+    ax1.set_title("Bunny points in camera frame 1")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_zlabel("z")
+    ax1.legend()
+
+    fig2 = plt.figure()
+    ax2 = fig2.add_subplot(111, projection="3d")
+    ax2.scatter(
+        points_c2[:, 0],
+        points_c2[:, 1],
+        points_c2[:, 2],
+        c="red",
+        s=10,
+        label="frame 2",
+    )
+    ax2.set_title("Bunny points in camera frame 2")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_zlabel("z")
+    ax2.legend()
+
+    # Plot stereo views as subplots in a single figure.
+    fig3, axes = plt.subplots(1, 2, figsize=(12, 5))
+    stereo_views = [
+        (stereo_img_coords_1, "frame 1"),
+        (stereo_img_coords_2, "frame 2"),
+    ]
+    all_u = np.concatenate(
+        [
+            stereo_img_coords_1[[0, 2], :].ravel(),
+            stereo_img_coords_2[[0, 2], :].ravel(),
+        ]
+    )
+    all_v = np.concatenate(
+        [
+            stereo_img_coords_1[[1, 3], :].ravel(),
+            stereo_img_coords_2[[1, 3], :].ravel(),
+        ]
+    )
+    u_min, u_max = float(np.min(all_u)), float(np.max(all_u))
+    v_min, v_max = float(np.min(all_v)), float(np.max(all_v))
+    for ax, (stereo_coords, title) in zip(axes, stereo_views):
+        ax.scatter(
+            stereo_coords[0, :],
+            stereo_coords[1, :],
+            c="blue",
+            s=10,
+            label="left",
+        )
+        ax.scatter(
+            stereo_coords[2, :],
+            stereo_coords[3, :],
+            c="red",
+            s=10,
+            label="right",
+        )
+        ax.set_xlim(u_min, u_max)
+        ax.set_ylim(v_max, v_min)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_title(f"Stereo image coordinates for {title}")
+        ax.set_xlabel("u")
+        ax.set_ylabel("v")
+        ax.legend()
+
+    fig3.tight_layout()
+    plt.show()
 
 
 def test_feature_extraction_and_matching_euroc(euroc_data, plot=False):
@@ -411,9 +424,12 @@ def test_clipper_block(bunny_stereo_synthetic):
     n_outliers = bunny_stereo_synthetic["n_outliers"]
 
     # Instantiate CLIPPER block
-    config = DataAssociationConfig()
-    clipper_block = ClipperBlock(config)
-    inliers = clipper_block.forward(
+    config = load_config(config_file)
+    data_association_config = config.data_association_config
+    data_association_config.invariant_epsilon = 0.002
+    data_association_config.invariant_sigma = 0.001
+    clipper_block = ClipperBlock(data_association_config)
+    inliers, soln = clipper_block.forward(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
     )
@@ -422,9 +438,60 @@ def test_clipper_block(bunny_stereo_synthetic):
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
-    result = clipper_block.certify_solution(inliers, check_constraints=True)
+    result = clipper_block.certify_solution(soln=soln, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
-    assert False
+
+
+def test_clipper_block_threshold(bunny_stereo_synthetic):
+    points_c1 = bunny_stereo_synthetic["points_1"]
+    points_c2 = bunny_stereo_synthetic["points_2"]
+    n_outliers = bunny_stereo_synthetic["n_outliers"]
+
+    # Instantiate CLIPPER block
+    config = load_config(config_file)
+    data_association_config = config.data_association_config
+    data_association_config.invariant_epsilon = 0.02
+    data_association_config.invariant_sigma = 0.01
+    data_association_config.clipper_config.threshold = True  # Enable thresholding
+
+    clipper_block = ClipperBlock(data_association_config)
+    inliers, x = clipper_block.forward(
+        torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
+        torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
+    )
+
+    assert (
+        torch.sum(inliers) >= points_c1.shape[0] - n_outliers
+    ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
+    # Test certification
+    result = clipper_block.certify_solution(inliers=inliers, check_constraints=True)
+    assert result.certified, "Certifier could not certify solution"
+
+
+def test_clipper_sdp_block(bunny_stereo_synthetic):
+
+    points_c1 = bunny_stereo_synthetic["points_1"]
+    points_c2 = bunny_stereo_synthetic["points_2"]
+    n_outliers = bunny_stereo_synthetic["n_outliers"]
+
+    # Instantiate CLIPPER block
+    config = load_config(config_file)
+    data_association_config = config.data_association_config
+    data_association_config.invariant_epsilon = 0.002
+    data_association_config.invariant_sigma = 0.001
+    clipper_sdp_block = ClipperSDPBlock(data_association_config)
+    # Run the CLIPPER SDP block to get inliers and the solution u
+    inliers, u = clipper_sdp_block.forward(
+        torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
+        torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
+    )
+    # assert that the original sampled points are inliers and the synthetic outliers are rejected
+    assert (
+        torch.sum(inliers) >= points_c1.shape[0] - n_outliers
+    ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
+    # Test certification
+    result = clipper_sdp_block.certify_solution(soln=u, check_constraints=True)
+    assert result.certified, "Certifier could not certify solution"
 
 
 def test_pointcloud_registration(bunny_stereo_synthetic):
@@ -490,10 +557,11 @@ def test_stereo_pipeline(euroc_data):
         pipeline = StereoPipeline(config)
         # Initialize with ground truth transform
         T_src_trg_gt = Transformation(T_ba=T_01)
+
         output = pipeline.forward(
             images=images,
             disparities=[disp0.float(), disp1.float()],
-            T_init=T_src_trg_gt.matrix(),  # initial guess for the relative transform
+            T_init=T_01,  # initial guess for the relative transform
         )
 
         # Check that the estimated transform is close to the ground truth
@@ -510,4 +578,8 @@ def test_stereo_pipeline(euroc_data):
         # Check registration certification status
         assert (
             output.registration_certified is True
-        ), "Registration should be certified when certification is disabled."
+        ), "Registration should be certified."
+        # Check the Data association certification status
+        assert (
+            output.data_association_certified is True
+        ), "Data association should be certified."

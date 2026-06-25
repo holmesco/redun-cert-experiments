@@ -2,8 +2,10 @@ import torch.nn as nn
 from dataclasses import dataclass, field
 from enum import Enum
 import torch
+import numpy as np
 from omegaconf import OmegaConf
 from pathlib import Path
+
 
 from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorConfig,
@@ -22,6 +24,7 @@ from stereo_loc.PointCloudRegistrationBlock import (
     PointCloudRegistrationBlock,
     PointCloudRegistrationConfig,
 )
+from ranktools import AnalyticCenterResult
 
 torch.set_default_dtype(torch.float32)
 
@@ -32,6 +35,8 @@ class StereoPipelineConfig:
 
     # Method for data association. Options: "clipper", "ransac"
     data_association_method: DataAssociationMethod = DataAssociationMethod.CLIPPER
+    # Top level Verbosity 
+    verbose: bool = True
     # Debug flag for the stereo pipeline. If true, will output additional debug information and visualizations.
     debug: bool = False
     # Certification flags
@@ -44,7 +49,9 @@ class StereoPipelineConfig:
         default_factory=FeatureMatcherConfig
     )
     stereo_camera_config: StereoCameraConfig = field(default_factory=StereoCameraConfig)
-    data_association_config: DataAssociationConfig = field(default_factory=DataAssociationConfig)
+    data_association_config: DataAssociationConfig = field(
+        default_factory=DataAssociationConfig
+    )
     registration_config: PointCloudRegistrationConfig = field(
         default_factory=PointCloudRegistrationConfig
     )
@@ -74,6 +81,9 @@ class StereoPipelineDebugInfo:
     inliers: torch.Tensor = None
     # Inverse covariance weights for each matched point pair, of shape (N, 3, 3).
     inv_cov_weights: torch.Tensor = None
+    # Certification results
+    cert_result_association: AnalyticCenterResult | None = None
+    cert_result_registration: AnalyticCenterResult | None = None
 
 
 @dataclass
@@ -108,9 +118,9 @@ class StereoPipeline:
         self.stereo_camera_model = StereoCameraModel(self.config.stereo_camera_config)
 
         # Set up data association
-        self.data_association_module: DataAssociationBlock
+        self.data_association: DataAssociationBlock
         if self.config.data_association_method == DataAssociationMethod.CLIPPER:
-            self.data_association_module = ClipperBlock(self.config.data_association_config)
+            self.data_association = ClipperBlock(self.config.data_association_config)
         elif self.config.data_association_method == DataAssociationMethod.RANSAC:
             raise NotImplementedError("RANSAC data association not implemented yet.")
         else:
@@ -119,7 +129,7 @@ class StereoPipeline:
             )
 
     def forward(
-        self, images: torch.Tensor, disparities: torch.Tensor, T_init: torch.Tensor
+        self, images: torch.Tensor, disparities: torch.Tensor, T_init: np.ndarray
     ) -> StereoPipelineOutput:
         """Forward pass through the stereo pipeline.
         Args:
@@ -137,6 +147,8 @@ class StereoPipeline:
         # Reshape keypoints to (1, 2, N) for the inverse camera model
         kpt_2D_src = kpt_2D_src.unsqueeze(0).transpose(1, 2)  # (1, 2, N)
         kpt_2D_trg = kpt_2D_trg.unsqueeze(0).transpose(1, 2)  # (1, 2, N)
+        if self.config.verbose:
+            print(f"Number of matched keypoints: {kpt_2D_src.size(2)}")
 
         # Get 3D keypoints from the disparities
         kpt_3D_src, valid_src = self.stereo_camera_model.inverse_camera_model(
@@ -154,17 +166,30 @@ class StereoPipeline:
         valid = valid_src & valid_trg  # (N,)
         kpt_3D_src = kpt_3D_src[:, valid]  # (4, M)
         kpt_3D_trg = kpt_3D_trg[:, valid]  # (4, M)
-
+        if self.config.verbose:
+            print("Done generating 3D keypoints from disparities.")
+            print(f"Number of valid 3D keypoints: {kpt_3D_src.size(1)}")
+            
+        
         # Call 3D data association to get inliers
-        inliers = self.data_association_module.forward(kpt_3D_src, kpt_3D_trg)
+        inliers, soln = self.data_association.forward(kpt_3D_src, kpt_3D_trg)
+        if self.config.verbose:
+            print(f"Number of inliers after data association: {torch.sum(inliers)}")
         # Call 3D data association certifier module
-        data_association_certified = True
-        if self.config.certify_data_association:
-            raise NotImplementedError("Data association certifier not implemented yet.")
+        data_association_certified = False
+        cert_result_da = None
+        if self.config.data_association_config.certify:
+            if self.config.data_association_config.clipper_config.threshold:
+                cert_result_da = self.data_association.certify_solution(inliers=inliers)
+                data_association_certified = cert_result_da.certified
+            else:
+                cert_result_da = self.data_association.certify_solution(soln=soln)
+                data_association_certified = cert_result_da.certified
+        if self.config.verbose:
+            print(f"Data association certification result: {cert_result_da}")
         # Restrict points to inliers
         kpt_3D_src_inlier = kpt_3D_src[:, inliers]  # (4, K)
         kpt_3D_trg_inlier = kpt_3D_trg[:, inliers]  # (4, K)
-
         # Retrieve matrix weights for each matched point pair (expects batch dim)
         valid_dummy = torch.ones(
             1, 1, kpt_3D_src_inlier.size(1), device=kpt_3D_src_inlier.device, dtype=bool
@@ -175,7 +200,9 @@ class StereoPipeline:
             self.stereo_camera_model,
             normalize_weights=True,
         )
-
+        
+        if self.config.verbose:
+            print(f"Starting registration with {kpt_3D_src_inlier.size(1)} inliers.")
         # Call pose estimator to get the relative transform between the robot body frame and the camera frame
         registration_block = PointCloudRegistrationBlock(
             config=self.config.registration_config,
@@ -188,10 +215,11 @@ class StereoPipeline:
         )
 
         # Certify solution
-        registration_certified = True
+        registration_certified = False
+        cert_result_reg = None
         if self.config.registration_config.certify:
             cert_result = registration_block.certify_solution(T_est)
-            if self.config.debug:
+            if self.config.verbose:
                 print(f"Certification result: {cert_result}")
 
         # Generate standard output
@@ -211,6 +239,8 @@ class StereoPipeline:
                 keypoints_3D=torch.stack([kpt_3D_src, kpt_3D_trg], dim=0),  # (2, 4, N)
                 inliers=inliers,  # (N,)
                 inv_cov_weights=inv_cov_weights.squeeze(0),  # (K, 3, 3)
+                cert_result_association=cert_result_da,
+                cert_result_registration=cert_result_reg,
             )
             output.debug_info = debug_info
 
