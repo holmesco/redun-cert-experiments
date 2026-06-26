@@ -12,8 +12,6 @@ os.environ["DISPLAY"] = ":32"
 from stereo_loc.EurocProcess import EurocDataset
 from stereo_loc.StereoPipeline import StereoPipeline, load_config
 from utils.stereo_camera_model import (
-    StereoCameraConfig,
-    StereoCameraModel,
     get_disparity,
 )
 
@@ -118,12 +116,20 @@ def plot_pointclouds(
 
 
 if __name__ == "__main__":
+    # Set seeds for reproducibility
+    seed = 42
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    
     with torch.no_grad():
         print("Collecting image data and generating disparities...")
         ds = get_euroc_data()
         # Compute transform for one step
         timestamp0 = ds.cam0.timestamps[1000]
-        timestamp1 = ds.cam1.timestamps[1010]
+        timestamp1 = ds.cam1.timestamps[1030]
         T_01 = ds.get_relative_transform(timestamp0, timestamp1, camera_frame=True)
         im0_L_t, im0_R_t, im0_L, im0_R = get_euroc_stereo_image(ds, timestamp0)
         im1_L_t, im1_R_t, im1_L, im1_R = get_euroc_stereo_image(ds, timestamp1)
@@ -133,7 +139,7 @@ if __name__ == "__main__":
 
         print("Setting up stereo pipeline...")
         # Set up config
-        config_path = ROOT / "configs" / "test_config.yaml"
+        config_path = ROOT / "configs" / "stereo_pipeline.yaml"
         config = load_config(config_path)
         # Turn on debug mode to visualize intermediate results
         config.debug = True

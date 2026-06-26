@@ -1,0 +1,60 @@
+feature_extractor_config:
+  max_num_keypoints: 1024
+registration_config:
+  certify: True
+  verbose: True
+  adjust_cost: True
+  # Analytic centering parameters
+  ac_params:
+    verbose: True
+    lin_solver: MFCG_LRP
+    lin_solve_max_iter: 400
+    lin_solve_tol: 1e-6
+    delta: 1e-5
+    rescale_lin_sys: False
+    max_iter: 20
+    # Early stopping local
+    early_stop_angle: True
+    max_angle: 1e-3
+    # Perturbation parameters
+    perturb_constraints: False
+    perturb_cost: True
+    eps_cost: 1e-5
+    # Preconditioner parameters
+    lrp_params:
+      tau: 1e-4
+      method: SparseLDLT
+    # Adaptive perturbation
+    adaptive_perturb: False
+    eps_mult_min: 1e-3
+data_association_method: CLIPPER
+data_association_config:
+  certify: True
+  clipper_config:
+    threshold: False
+    invariant_epsilon: 1.0e-1
+    invariant_sigma: 5.0e-2
+  # Analytic Centering for data association
+  ac_params:
+    verbose: True
+    lin_solver: MFCG_LRP
+    lin_solve_max_iter: 400
+    lin_solve_tol: 1e-3
+    delta: 1e-6
+    rescale_lin_sys: False
+    max_iter: 6
+    # Early stopping local
+    early_stop_angle: False
+    max_angle: 1e-3
+    # Perturbation parameters
+    perturb_cost: True
+    eps_cost: 1e-6
+    perturb_constraints: True
+    eps_constr: 1e-6
+    # Preconditioner parameters
+    lrp_params:
+      tau: 1e-6
+      method: SparseLDLT
+    # Adaptive perturbation
+    adaptive_perturb: True
+    eps_mult_min: 1e-3

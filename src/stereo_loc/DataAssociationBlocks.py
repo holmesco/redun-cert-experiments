@@ -14,7 +14,7 @@ from cert_tools.sdp_solvers import solve_sdp_fusion
 class DataAssociationMethod(Enum):
     CLIPPER = "CLIPPER"
     RANSAC = "RANSAC"
-    SDP = "SDP"
+    CLIPPER_SDP = "CLIPPER_SDP"
 
 
 @dataclass
@@ -108,9 +108,7 @@ class DataAssociationBlock:
         # Check constraints
         if check_constraints:
             for i, (A, b) in enumerate(zip(constraints, values)):
-                assert (
-                    np.abs(x.T @ A @ x - b) < 1e-10
-                ), f"Constraint {i} violated!"
+                assert np.abs(x.T @ A @ x - b) < 1e-10, f"Constraint {i} violated!"
         # Get the cost of the solution if not provided
         if cost is None:
             cost = -(x.T @ M @ x).item()
@@ -267,14 +265,18 @@ def get_maxclique_sdp_constraints(M: np.ndarray):
     """
     # Find indices where M is zero and j > i
     rows, cols = np.where((M == 0) & (np.triu(np.ones(M.shape, dtype=bool), k=1)))
-    constraints = []
-    for r, c in zip(rows, cols):
-        sparse_mat = csc_array(([1.0, 1.0], ([r, c], [c, r])), shape=M.shape)
-        constraints.append(sparse_mat)
-    values = np.array([0.0] * len(constraints))
-    # add the trace constraint
+    constraints = [
+        csc_array(([1.0, 1.0], ([r, c], [c, r])), shape=M.shape)
+        for r, c in zip(rows, cols)
+    ]
+
+    # Preallocate values array
+    values = np.zeros(len(constraints) + 1)
+    values[:-1] = 0.0  # Non-edges
+    values[-1] = 1.0  # Trace constraint
+
+    # Add the trace constraint
     sparse_identity = csc_array(np.eye(M.shape[0]))
     constraints.append(sparse_identity)
-    values = np.append(values, 1.0)
 
     return constraints, values

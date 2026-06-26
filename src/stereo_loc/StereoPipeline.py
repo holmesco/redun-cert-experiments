@@ -17,6 +17,7 @@ from stereo_loc.DataAssociationBlocks import (
     DataAssociationBlock,
     DataAssociationMethod,
     ClipperBlock,
+    ClipperSDPBlock,
     DataAssociationConfig,
 )
 from utils.keypoint_tools import get_inv_cov_weights
@@ -39,8 +40,7 @@ class StereoPipelineConfig:
     verbose: bool = True
     # Debug flag for the stereo pipeline. If true, will output additional debug information and visualizations.
     debug: bool = False
-    # Certification flags
-    certify_data_association: bool = False
+    
     # submodule configs
     feature_extractor_config: FeatureExtractorConfig = field(
         default_factory=FeatureExtractorConfig
@@ -123,6 +123,8 @@ class StereoPipeline:
             self.data_association = ClipperBlock(self.config.data_association_config)
         elif self.config.data_association_method == DataAssociationMethod.RANSAC:
             raise NotImplementedError("RANSAC data association not implemented yet.")
+        elif self.config.data_association_method == DataAssociationMethod.CLIPPER_SDP:
+            self.data_association = ClipperSDPBlock(self.config.data_association_config)
         else:
             raise ValueError(
                 f"Invalid data association method: {self.config.data_association_method}"
