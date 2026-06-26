@@ -17,7 +17,6 @@ from stereo_loc.DataAssociationBlocks import (
     DataAssociationBlock,
     DataAssociationMethod,
     ClipperBlock,
-    ClipperSDPBlock,
     DataAssociationConfig,
 )
 from utils.keypoint_tools import get_inv_cov_weights
@@ -34,13 +33,11 @@ torch.set_default_dtype(torch.float32)
 class StereoPipelineConfig:
     """Configuration for the stereo pipeline."""
 
-    # Method for data association. Options: "clipper", "ransac"
-    data_association_method: DataAssociationMethod = DataAssociationMethod.CLIPPER
-    # Top level Verbosity 
+    # Top level Verbosity
     verbose: bool = True
     # Debug flag for the stereo pipeline. If true, will output additional debug information and visualizations.
     debug: bool = False
-    
+
     # submodule configs
     feature_extractor_config: FeatureExtractorConfig = field(
         default_factory=FeatureExtractorConfig
@@ -84,6 +81,10 @@ class StereoPipelineDebugInfo:
     # Certification results
     cert_result_association: AnalyticCenterResult | None = None
     cert_result_registration: AnalyticCenterResult | None = None
+    # Data association solution (for CLIPPER_SDP), of shape (N, N).
+    da_soln: np.ndarray | None = None
+    # Clipper matrix M (for CLIPPER_SDP), of shape (N, N).
+    M: np.ndarray | None = None
 
 
 @dataclass
@@ -119,15 +120,16 @@ class StereoPipeline:
 
         # Set up data association
         self.data_association: DataAssociationBlock
-        if self.config.data_association_method == DataAssociationMethod.CLIPPER:
+        if self.config.data_association_config.method in [
+            DataAssociationMethod.CLIPPER,
+            DataAssociationMethod.CLIPPER_SDP,
+        ]:
             self.data_association = ClipperBlock(self.config.data_association_config)
-        elif self.config.data_association_method == DataAssociationMethod.RANSAC:
+        elif self.config.data_association_config.method == DataAssociationMethod.RANSAC:
             raise NotImplementedError("RANSAC data association not implemented yet.")
-        elif self.config.data_association_method == DataAssociationMethod.CLIPPER_SDP:
-            self.data_association = ClipperSDPBlock(self.config.data_association_config)
         else:
             raise ValueError(
-                f"Invalid data association method: {self.config.data_association_method}"
+                f"Invalid data association method: {self.config.data_association_config.method}"
             )
 
     def forward(
@@ -171,10 +173,22 @@ class StereoPipeline:
         if self.config.verbose:
             print("Done generating 3D keypoints from disparities.")
             print(f"Number of valid 3D keypoints: {kpt_3D_src.size(1)}")
-            
-        
+
         # Call 3D data association to get inliers
-        inliers, soln = self.data_association.forward(kpt_3D_src, kpt_3D_trg)
+        if self.config.data_association_config.method == DataAssociationMethod.CLIPPER:
+            inliers, soln = self.data_association.run_clipper(kpt_3D_src, kpt_3D_trg)
+        elif self.config.data_association_config.method == DataAssociationMethod.RANSAC:
+            raise NotImplementedError("RANSAC data association not implemented yet.")
+        elif (
+            self.config.data_association_config.method
+            == DataAssociationMethod.CLIPPER_SDP
+        ):
+            inliers, soln = self.data_association.run_sdp(kpt_3D_src, kpt_3D_trg)
+        else:
+            raise ValueError(
+                f"Invalid data association method: {self.config.data_association_config.method}"
+            )
+
         if self.config.verbose:
             print(f"Number of inliers after data association: {torch.sum(inliers)}")
         # Call 3D data association certifier module
@@ -182,11 +196,11 @@ class StereoPipeline:
         cert_result_da = None
         if self.config.data_association_config.certify:
             if self.config.data_association_config.clipper_config.threshold:
-                cert_result_da = self.data_association.certify_solution(inliers=inliers)
-                data_association_certified = cert_result_da.certified
+                cert_kwargs = dict(inliers=inliers)
             else:
-                cert_result_da = self.data_association.certify_solution(soln=soln)
-                data_association_certified = cert_result_da.certified
+                cert_kwargs = dict(soln=soln)
+            cert_result_da = self.data_association.certify_solution(**cert_kwargs)
+            data_association_certified = cert_result_da.certified
         if self.config.verbose:
             print(f"Data association certification result: {cert_result_da}")
         # Restrict points to inliers
@@ -202,7 +216,7 @@ class StereoPipeline:
             self.stereo_camera_model,
             normalize_weights=True,
         )
-        
+
         if self.config.verbose:
             print(f"Starting registration with {kpt_3D_src_inlier.size(1)} inliers.")
         # Call pose estimator to get the relative transform between the robot body frame and the camera frame
@@ -220,9 +234,10 @@ class StereoPipeline:
         registration_certified = False
         cert_result_reg = None
         if self.config.registration_config.certify:
-            cert_result = registration_block.certify_solution(T_est)
+            cert_result_reg = registration_block.certify_solution(T_est)
             if self.config.verbose:
-                print(f"Certification result: {cert_result}")
+                print(f"Certification result: {cert_result_reg}")
+            registration_certified = cert_result_reg.certified
 
         # Generate standard output
         output = StereoPipelineOutput(
@@ -243,6 +258,8 @@ class StereoPipeline:
                 inv_cov_weights=inv_cov_weights.squeeze(0),  # (K, 3, 3)
                 cert_result_association=cert_result_da,
                 cert_result_registration=cert_result_reg,
+                da_soln = soln,
+                M=self.data_association.M,
             )
             output.debug_info = debug_info
 

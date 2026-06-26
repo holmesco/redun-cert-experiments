@@ -20,7 +20,6 @@ class DataAssociationMethod(Enum):
 @dataclass
 class ClipperConfig:
     """Configuration for the CLIPPER data association module."""
-
     # CLIPPER invariant parameters
     invariant_epsilon: float = 0.3  # 30 cm, correspoding to max allowable discrepancy
     invariant_sigma: float = (
@@ -35,7 +34,9 @@ class ClipperConfig:
 @dataclass
 class DataAssociationConfig:
     """Configuration for the CLIPPER data association module."""
-
+    # Method for data association. Options: "clipper", "ransac"
+    method: DataAssociationMethod = DataAssociationMethod.CLIPPER
+    # Config for clipper data association
     clipper_config: ClipperConfig = field(default_factory=ClipperConfig)
     # Certification flag for data association
     certify: bool = False
@@ -43,6 +44,8 @@ class DataAssociationConfig:
     ac_params: AnalyticCenterParamsConfig = field(
         default_factory=AnalyticCenterParamsConfig
     )
+    # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
+    rank_ratio: float = 1e-6
 
 
 class DataAssociationBlock:
@@ -51,7 +54,7 @@ class DataAssociationBlock:
     def __init__(self, config: DataAssociationConfig):
         self.config = config
 
-    def forward(self, kpt_3D_src, kpt_3D_trg) -> torch.Tensor:
+    def run_clipper(self, kpt_3D_src, kpt_3D_trg) -> torch.Tensor:
         """Forward pass through the data association block.
         Args:
             kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
@@ -135,14 +138,14 @@ class ClipperBlock(DataAssociationBlock):
         params.rounding = self.config.clipper_config.clipper_rounding_method
         # define clipper object
         self.clipper = clipperpy.CLIPPER(invariant, params)
+        # Affinity matrix
+        self.M: np.ndarray | None = None
 
-    def forward(self, kpt_3D_src, kpt_3D_trg):
-        """Forward pass through the CLIPPER block. Keypoints with same index are assumed to be putative correspondences. The CLIPPER block will output a mask of inliers for the matched keypoints.
+    def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):
+        """Set up the affinity matrix for the CLIPPER block. This is a separate function to allow for reusing the affinity matrix for certification.
         Args:
             kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
             kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
-        Returns:
-            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
         """
         # Convert to numpy arrays
         kpt_3D_src_np = kpt_3D_src[:3, :].double().cpu().numpy()  # (3,N), float64
@@ -155,12 +158,33 @@ class ClipperBlock(DataAssociationBlock):
             A[i, 1] = i
         # Get pairwise consistency matrix
         self.clipper.score_pairwise_consistency(kpt_3D_src_np, kpt_3D_trg_np, A)
+        # Get matrix
+        self.M = self.clipper.get_affinity_matrix()
         # thresholding to get unweighted graph if enabled
         if self.config.clipper_config.threshold:
-            M = self.clipper.get_affinity_matrix()
-            M = (M > 0.0).astype(float)
+            self.M = (self.M > 0.0).astype(float)
             # Set constraint and affinity matrix to thresholded values.
-            self.clipper.set_matrix_data(M=M, C=M)
+            self.clipper.set_matrix_data(M=self.M, C=self.M)
+
+    def run_clipper(
+        self,
+        kpt_3D_src: torch.Tensor | None = None,
+        kpt_3D_trg: torch.Tensor | None = None,
+    ):
+        """Forward pass through the CLIPPER block. Keypoints with same index are assumed to be putative correspondences. The CLIPPER block will output a mask of inliers for the matched keypoints.
+        Args:
+            kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
+            kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
+        Returns:
+            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
+        """
+        # Set up affinity matrix for max clique problem.
+        if kpt_3D_src is not None and kpt_3D_trg is not None:
+            self.set_up_affinity_matrix(kpt_3D_src, kpt_3D_trg)
+        elif self.M is None:
+            raise ValueError(
+                "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
+            )
         # Run CLIPPER
         self.clipper.solve()
         # retrieve inliers
@@ -169,60 +193,21 @@ class ClipperBlock(DataAssociationBlock):
         inliers = torch.from_numpy(soln.u > thresh).bool()  # (N,)
         return inliers, soln.u
 
-    def get_affinity(self):
-        """Get the affinity matrix from the CLIPPER block.
-        Warning: This should only be called after the forward pass, and will return the affinity matrix for the last pair of keypoints that were passed through the forward pass.
-        Returns:
-            M (torch.Tensor): Affinity matrix, of shape (N, N).
-        """
-        return self.clipper.get_affinity_matrix()
-
-
-class ClipperSDPBlock(DataAssociationBlock):
-    """CLIPPER SDP block for 3D data association. Takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
-
-    def __init__(self, config: DataAssociationConfig):
-        super().__init__(config)
-        # Set up invariant
-        iparams = clipperpy.invariants.EuclideanDistanceParams()
-        iparams.sigma = self.config.clipper_config.invariant_sigma
-        iparams.epsilon = self.config.clipper_config.invariant_epsilon
-        invariant = clipperpy.invariants.EuclideanDistance(iparams)
-        # Define rounding strategy
-        params = clipperpy.Params()
-        params.rounding = self.config.clipper_config.clipper_rounding_method
-        # define clipper object
-        self.clipper = clipperpy.CLIPPER(invariant, params)
-
-    def forward(self, kpt_3D_src, kpt_3D_trg):
-        """Forward pass through the CLIPPER SDP block. Keypoints with same index are assumed to be putative correspondences. The CLIPPER block will output a mask of inliers for the matched keypoints.
-        Args:
-            kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
-            kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
-        Returns:
-            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
-        """
-        # Convert to numpy arrays
-        kpt_3D_src_np = kpt_3D_src[:3, :].double().cpu().numpy()  # (3,N), float64
-        kpt_3D_trg_np = kpt_3D_trg[:3, :].double().cpu().numpy()  # (3,N), float64
-        N = kpt_3D_src_np.shape[1]  # Num associations
-        # Putative correspondences
-        A = np.zeros((N, 2), dtype=np.int32)
-        for i in range(N):
-            A[i, 0] = i
-            A[i, 1] = i
-        # Get pairwise consistency matrix
-        self.clipper.score_pairwise_consistency(kpt_3D_src_np, kpt_3D_trg_np, A)
-        # thresholding to get unweighted graph if enabled
-        M = self.clipper.get_affinity_matrix()
-        if self.config.clipper_config.threshold:
-            M = (M > 0.0).astype(float)
+    def run_sdp(self, kpt_3D_src, kpt_3D_trg):
+        """Run the SDP relaxation of the max clique problem defined by the affinity matrix M. This is a separate function to allow for reusing the affinity matrix for certification."""
+        # Set up affinity matrix for max clique problem.
+        if kpt_3D_src is not None and kpt_3D_trg is not None:
+            self.set_up_affinity_matrix(kpt_3D_src, kpt_3D_trg)
+        elif self.M is None:
+            raise ValueError(
+                "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
+            )
         # Get the constraints for the max clique problem
-        As, bs = get_maxclique_sdp_constraints(M)
+        As, bs = get_maxclique_sdp_constraints(self.M)
         constraints = [(A, b) for A, b in zip(As, bs)]
         # Solve SDP: min <Q, X> s.t. <A_i, X> = b_i, X >= 0
         X_sol, info = solve_sdp_fusion(
-            Q=-M,
+            Q=-self.M,
             Constraints=constraints,
             adjust=False,
             verbose=True,
@@ -230,22 +215,35 @@ class ClipperSDPBlock(DataAssociationBlock):
         time_sdp = info["time"]
         print(f"SDP solve time: {time_sdp*1e3:.0f} ms")
 
-        # # Extract rank-1 solution via eigendecomposition
+        # Extract rank-1 solution via eigendecomposition
         eigvals, eigvecs = np.linalg.eigh(X_sol)
+        # Determine the rank based on relative ratio of eigenvalues
+        max_eigval = eigvals[-1]
+        rank = np.sum(eigvals > self.config.rank_ratio * max_eigval)
+        if rank > 1:
+            print(
+                f"Warning: SDP solution is not rank-1. Rank: {rank}"
+            )
         # Leading eigenvector (largest eigenvalue)
-        u = eigvecs[:, -1] * np.sqrt(np.maximum(eigvals[-1], 0.0))
+        U = eigvecs[:, -rank:] * np.sqrt(np.maximum(eigvals[-rank:], 0.0))
         # Convert to inlier mask
-        thresh = np.max(u) / 2
-        inliers = torch.from_numpy(u > thresh).bool()  # (N,)
-        return inliers, u
+        inliers = None
+        if rank == 1:
+            thresh = np.max(U) / 2
+            inliers = torch.from_numpy(U[:,0] > thresh).bool()  # (N,)
+        return inliers, U
 
     def get_affinity(self):
         """Get the affinity matrix from the CLIPPER block.
         Warning: This should only be called after the forward pass, and will return the affinity matrix for the last pair of keypoints that were passed through the forward pass.
         Returns:
-            M (torch.Tensor): Affinity matrix, of shape (N, N).
+            M (np.ndarray): Affinity matrix, of shape (N, N).
         """
-        return self.clipper.get_affinity_matrix()
+        if self.M is None:
+            raise ValueError(
+                "Affinity matrix has not been set up. Call forward() first."
+            )
+        return self.M
 
 
 def get_maxclique_sdp_constraints(M: np.ndarray):
