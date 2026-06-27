@@ -14,7 +14,7 @@ import torch
 import numpy as np
 from matplotlib import pyplot as plt
 
-from stereo_loc.EurocProcess import EurocDataset
+from stereo_loc.EurocPreprocess import EurocPreprocess
 from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorConfig,
     FeatureMatcherConfig,
@@ -27,7 +27,7 @@ default_root = ROOT / "data" / "Euroc" / "MH_01_easy"
 if not default_root.exists():
     raise SystemExit(f"Euroc dataset not found at {default_root}")
 
-ds = EurocDataset(default_root)
+ds = EurocPreprocess(default_root)
 timestamps = list(ds.cam0.timestamp_to_file.keys())
 if not timestamps:
     raise SystemExit("No images found in Euroc cam0 data mapping")

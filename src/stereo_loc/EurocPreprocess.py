@@ -1,3 +1,8 @@
+"""
+This module provides functionality to process the EuRoC MAV dataset, including loading camera and groundtruth data, computing disparities, and visualizing trajectories.
+It defines the `EurocPreprocess` class, which encapsulates the dataset processing logic, and provides methods for accessing images, disparities, and groundtruth information.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -86,7 +91,7 @@ class StereoCamera:
     right_p: np.ndarray
 
 
-class EurocDataset:
+class EurocPreprocess:
     def __init__(
         self,
         path: Path,
@@ -494,6 +499,9 @@ class EurocDataset:
     def get_image_at_timestamp(
         self, timestamp: int, rectify=True
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Get the left and right images at a given timestamp.
+        If rectify is True, the images are rectified using the stereo camera parameters.
+        """
         cam0_path = self.cam0.timestamp_to_file.get(timestamp)
         cam1_path = self.cam1.timestamp_to_file.get(timestamp)
 
@@ -514,6 +522,9 @@ class EurocDataset:
         return img0, img1
 
     def get_disp_at_timestamp(self, timestamp: int) -> np.ndarray:
+        """Get the disparity image at a given timestamp.
+        The disparity image is expected to be stored in the `disparities` directory.
+        """
         cam0_path = self.cam0.timestamp_to_file.get(timestamp)
         if cam0_path is None:
             raise KeyError(f"Timestamp {timestamp} not found in cam0 mapping.")
@@ -550,7 +561,7 @@ class EurocDataset:
         return rect_img0, rect_img1
 
 
-def disparity_interactive(ds: EurocDataset, index=1000):
+def disparity_interactive(ds: EurocPreprocess, index=1000):
     # Retrieve images
     timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     img_L, img_R = ds.get_image_at_timestamp(timestamp, rectify=True)
@@ -620,7 +631,7 @@ def disparity_interactive(ds: EurocDataset, index=1000):
     cv2.destroyAllWindows()
 
 
-def make_disparity_plots(ds: EurocDataset, index, reprocess=False):
+def make_disparity_plots(ds: EurocPreprocess, index, reprocess=False):
     timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     im0_raw, im1_raw = ds.get_image_at_timestamp(timestamp, rectify=False)
     im0_rect, im1_rect = ds.get_image_at_timestamp(timestamp, rectify=True)
@@ -650,7 +661,7 @@ def make_disparity_plots(ds: EurocDataset, index, reprocess=False):
 
 if __name__ == "__main__":
     root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
-    ds = EurocDataset(root)
+    ds = EurocPreprocess(root)
     # ds.plot_groundtruth_trajectory()
 
     # Disparity Tuning:

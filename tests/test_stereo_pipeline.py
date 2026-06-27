@@ -9,7 +9,7 @@ from pylgmath import Transformation
 # Ensure plotting uses the desired X display (useful in headless CI/devcontainer)
 os.environ["DISPLAY"] = ":32"
 
-from stereo_loc.EurocProcess import EurocDataset
+from stereo_loc.EurocPreprocess import EurocPreprocess
 from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorConfig,
     FeatureMatcherConfig,
@@ -52,7 +52,7 @@ def euroc_data():
     if not default_root.exists():
         pytest.skip(f"Euroc dataset not found at {default_root}")
 
-    ds = EurocDataset(default_root)
+    ds = EurocPreprocess(default_root)
     return ds
 
 

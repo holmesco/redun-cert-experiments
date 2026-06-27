@@ -9,7 +9,7 @@ from pylgmath import Transformation
 # Ensure plotting uses the desired X display (useful in headless CI/devcontainer)
 os.environ["DISPLAY"] = ":32"
 
-from stereo_loc.EurocProcess import EurocDataset
+from stereo_loc.EurocPreprocess import EurocPreprocess
 from stereo_loc.DataAssociationBlocks import DataAssociationMethod
 from stereo_loc.StereoPipeline import StereoPipeline, load_config
 from utils.stereo_camera_model import (
@@ -30,9 +30,9 @@ def get_euroc_data():
     # Expected default dataset location inside the experiments tree
     default_root = ROOT / "data" / "Euroc" / "MH_01_easy"
     if not default_root.exists():
-        pytest.skip(f"Euroc dataset not found at {default_root}")
+        raise(f"Euroc dataset not found at {default_root}")
 
-    ds = EurocDataset(default_root)
+    ds = EurocPreprocess(default_root)
     return ds
 
 
@@ -247,6 +247,7 @@ def _run_pipeline_for_method(index0, index1, method: DataAssociationMethod):
         "T_01": T_01,
     }
 
+
 def plot_inlier_matches_3d(
     kpt_3D_0,
     kpt_3D_1,
@@ -261,7 +262,7 @@ def plot_inlier_matches_3d(
 
     inliers_common = inliers_clipper & inliers_sdp
     all_inliers = inliers_clipper | inliers_sdp
-    
+
     for i in range(inliers_common.shape[0]):
         if inliers_common[i]:
             line_color = "green"
@@ -271,7 +272,7 @@ def plot_inlier_matches_3d(
             line_color = "orange"
         else:
             continue
-        
+
         ax.plot(
             [kpt_3D_0[0, i], kpt_3D_1[0, i]],
             [kpt_3D_0[1, i], kpt_3D_1[1, i]],
@@ -280,7 +281,7 @@ def plot_inlier_matches_3d(
             linewidth=1.0,
             alpha=0.85,
         )
-        
+
     ax.scatter(
         kpt_3D_0[0, all_inliers],
         kpt_3D_0[1, all_inliers],
@@ -299,7 +300,7 @@ def plot_inlier_matches_3d(
         label="frame 1",
         alpha=0.7,
     )
-    
+
     ax.set_title(title)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
@@ -307,7 +308,6 @@ def plot_inlier_matches_3d(
     ax.set_aspect("equal", adjustable="box")
     ax.legend()
     return ax
-
 
 
 def print_method_info(result):
@@ -323,15 +323,22 @@ def print_method_info(result):
     xi_error = (T_src_trg.inverse() @ T_src_trg_gt).vec()
     trans_error = np.linalg.norm(xi_error[:3])
     rot_error = np.linalg.norm(xi_error[3:])
-    print(f"Certification result (association) ({method.value}): {result['output'].data_association_certified}")
-    print(f"Certification result (registration) ({method.value}): {result['output'].registration_certified}")
-    print(f"data association cost ({method.value}): {cost.item():.4f}") 
-    print(f"Number of inliers ({method.value}): {result['inliers'].sum()} / {len(result['inliers'])}")
+    print(
+        f"Certification result (association) ({method.value}): {result['output'].data_association_certified}"
+    )
+    print(
+        f"Certification result (registration) ({method.value}): {result['output'].registration_certified}"
+    )
+    print(f"data association cost ({method.value}): {cost.item():.4f}")
+    print(
+        f"Number of inliers ({method.value}): {result['inliers'].sum()} / {len(result['inliers'])}"
+    )
     print(f"Estimated transform ({method.value}):\n{T_src_trg.matrix()}")
     print(f"Ground truth transform:\n{T_src_trg_gt.matrix()}")
     print(
         f"Translation error ({method.value}): {trans_error:.4f} m, Rotation error ({method.value}): {rot_error:.4f} rad"
     )
+
 
 def compare_methods(index0=1000, index1=1030, plot=False):
     with torch.no_grad():
@@ -344,7 +351,7 @@ def compare_methods(index0=1000, index1=1030, plot=False):
 
         print_method_info(clipper)
         print_method_info(clipper_sdp)
-        
+
         # Check that the same keypoints were matched by both methods
         keypoints_2D_clip = clipper["output"].debug_info.keypoints_2D
         keypoints_2D_sdp = clipper_sdp["output"].debug_info.keypoints_2D
@@ -367,7 +374,7 @@ def compare_methods(index0=1000, index1=1030, plot=False):
                 clipper_sdp["inliers"],
                 title="3D matches with no correction (CLIPPER)",
             )
-            
+
             plt.show()
 
 
