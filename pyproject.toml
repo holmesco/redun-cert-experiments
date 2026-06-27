@@ -59,12 +59,12 @@ explicit = true
 torch = { index = "pytorch-cu121" }
 torchaudio = { index = "pytorch-cu121" }
 torchvision = { index = "pytorch-cu121" }
-clipperpy = { workspace = true }
 cert-tools = { workspace = true, editable = true }
 poly-matrix = { workspace = true }
 mwcerts = { workspace = true }
 lightglue = { workspace = true }
 ranktools = { path = "../ranktools" }
+clipperpy = { workspace = true }
 
 [tool.uv.workspace]
 members = [

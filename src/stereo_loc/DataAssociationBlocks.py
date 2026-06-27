@@ -47,24 +47,13 @@ class DataAssociationConfig:
     # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
     rank_ratio: float = 1e-6
 
-
 class DataAssociationBlock:
     """Data association block that takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
 
     def __init__(self, config: DataAssociationConfig):
         self.config = config
-
-    def run_clipper(self, kpt_3D_src, kpt_3D_trg) -> torch.Tensor:
-        """Forward pass through the data association block.
-        Args:
-            kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
-            kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
-        Returns:
-            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
-        """
-        raise NotImplementedError(
-            "Forward pass not implemented for base DataAssociationBlock class."
-        )
+        # Affinity matrix
+        self.M: np.ndarray | None = None
 
     def get_affinity(self) -> np.ndarray:
         """Get the affinity matrix from the data association block.
@@ -138,8 +127,7 @@ class ClipperBlock(DataAssociationBlock):
         params.rounding = self.config.clipper_config.clipper_rounding_method
         # define clipper object
         self.clipper = clipperpy.CLIPPER(invariant, params)
-        # Affinity matrix
-        self.M: np.ndarray | None = None
+        
 
     def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):
         """Set up the affinity matrix for the CLIPPER block. This is a separate function to allow for reusing the affinity matrix for certification.
@@ -245,6 +233,7 @@ class ClipperBlock(DataAssociationBlock):
             )
         return self.M
 
+    
 
 def get_maxclique_sdp_constraints(M: np.ndarray):
     """Get the constraints of the maximum clique problem.
