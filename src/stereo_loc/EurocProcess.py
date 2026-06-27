@@ -27,6 +27,7 @@ class CameraSensorInfo:
     distortion_model: str | None
     distortion_coefficients: np.ndarray
 
+
 @dataclass(frozen=True)
 class CameraInfo:
     path: Path
@@ -387,8 +388,56 @@ class EurocDataset:
             T_s0_s1 = T_sb @ T_b0_b1 @ np.linalg.inv(T_sb)
             return T_s0_s1
 
-        return T_s0_s1
-    
+        return T_b0_b1
+
+    def process_disparities(self) -> list[Path]:
+        """Compute and store a disparity image for each stereo pair in the dataset.
+
+        Disparity images are written to a new `disparities` directory alongside
+        the `cam0` and `cam1` directories, using the same file names as the
+        camera images referenced by `self.cam0.timestamp_to_file`.
+        """
+        disparity_dir = self.mav0_path / "disparities"
+        disparity_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_paths: list[Path] = []
+        total = len(self.cam0.timestamps)
+
+        def print_progress(current: int) -> None:
+            bar_width = 30
+            filled = int(bar_width * current / max(total, 1))
+            bar = "#" * filled + "-" * (bar_width - filled)
+            print(
+                f"\rProcessing disparities: [{bar}] {current}/{total}",
+                end="",
+                flush=True,
+            )
+
+        i = 0
+        for timestamp in self.cam0.timestamps:
+            img0, img1 = self.get_image_at_timestamp(timestamp, rectify=True)
+            disparity = get_disparity(img0, img1, plot=False)
+
+            # Store disparity as a 16-bit PNG with a fixed scale factor so the
+            # values can be recovered later.
+            disparity = np.asarray(disparity, dtype=np.float32)
+            disparity = np.nan_to_num(disparity, nan=0.0, posinf=0.0, neginf=0.0)
+            disparity_u16 = np.clip(disparity * 256.0, 0, np.iinfo(np.uint16).max)
+            disparity_u16 = disparity_u16.astype(np.uint16)
+
+            cam0_name = self.cam0.timestamp_to_file[timestamp].name
+            output_path = disparity_dir / cam0_name
+            if not cv2.imwrite(str(output_path), disparity_u16[0]):
+                raise IOError(f"Failed to write disparity image: {output_path}")
+            saved_paths.append(output_path)
+            i += 1
+            print_progress(i)
+
+        if total > 0:
+            print()
+
+        return saved_paths
+
     def get_stereo_cam_config(self, sigma=0.5) -> StereoCameraConfig:
         """Returns a StereoCameraConfig object based on the loaded stereo camera parameters."""
         if self.stereo_camera is None:
@@ -463,6 +512,22 @@ class EurocDataset:
         if rectify:
             img0, img1 = self.rectify_image_pair(img0, img1)
         return img0, img1
+
+    def get_disp_at_timestamp(self, timestamp: int) -> np.ndarray:
+        cam0_path = self.cam0.timestamp_to_file.get(timestamp)
+        if cam0_path is None:
+            raise KeyError(f"Timestamp {timestamp} not found in cam0 mapping.")
+
+        disparity_path = self.mav0_path / "disparities" / cam0_path.name
+
+        if not disparity_path.exists():
+            raise FileNotFoundError(f"Disparity image not found: {disparity_path}")
+
+        disparity = cv2.imread(str(disparity_path), cv2.IMREAD_UNCHANGED)
+        if disparity is None:
+            raise IOError(f"Failed to read disparity image: {disparity_path}")
+
+        return disparity
 
     def rectify_image_pair(
         self, img0: np.ndarray, img1: np.ndarray
@@ -555,7 +620,7 @@ def disparity_interactive(ds: EurocDataset, index=1000):
     cv2.destroyAllWindows()
 
 
-def make_disparity_plots(ds: EurocDataset, index):
+def make_disparity_plots(ds: EurocDataset, index, reprocess=False):
     timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     im0_raw, im1_raw = ds.get_image_at_timestamp(timestamp, rectify=False)
     im0_rect, im1_rect = ds.get_image_at_timestamp(timestamp, rectify=True)
@@ -575,7 +640,10 @@ def make_disparity_plots(ds: EurocDataset, index):
     axes[1, 1].axis("off")
     fig.tight_layout()
 
-    disparity = get_disparity(im0_rect, im1_rect, plot=False)
+    if reprocess:
+        disparity = get_disparity(im0_rect, im1_rect, plot=False)
+    else:
+        disparity = ds.get_disp_at_timestamp(timestamp)
     axes[1, 0].imshow(disparity, cmap="jet", alpha=0.5)
     plt.show()
 
@@ -588,7 +656,10 @@ if __name__ == "__main__":
     # Disparity Tuning:
     # disparity_interactive(ds, 2300)
 
-    # Disparity Check:
-    make_disparity_plots(ds, 2000)
+    # Disparity Test:
+    # make_disparity_plots(ds, 0, reprocess=False)
+
+    # Process all disparities and save to disk:
+    ds.process_disparities()
 
     print("done")

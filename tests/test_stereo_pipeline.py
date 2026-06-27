@@ -364,7 +364,7 @@ def test_3d_point_reconstruction_euroc(euroc_data, plot=True):
         0.1  # set sigma to 10 cm to allow for some noise in the pairwise distances
     )
     clipper_block = ClipperBlock(clipper_cfg)
-    inliers = clipper_block.forward(kpt_3D_0, kpt_3D_1)
+    inliers, soln = clipper_block.run_clipper(kpt_3D_0, kpt_3D_1)
 
     if plot:
         fig = plt.figure()
@@ -429,7 +429,7 @@ def test_clipper_block(bunny_stereo_synthetic):
     data_association_config.invariant_epsilon = 0.002
     data_association_config.invariant_sigma = 0.001
     clipper_block = ClipperBlock(data_association_config)
-    inliers, soln = clipper_block.forward(
+    inliers, soln = clipper_block.run_clipper(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
     )
@@ -455,7 +455,7 @@ def test_clipper_block_threshold(bunny_stereo_synthetic):
     data_association_config.clipper_config.threshold = True  # Enable thresholding
 
     clipper_block = ClipperBlock(data_association_config)
-    inliers, x = clipper_block.forward(
+    inliers, x = clipper_block.run_clipper(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
     )
@@ -468,7 +468,7 @@ def test_clipper_block_threshold(bunny_stereo_synthetic):
     assert result.certified, "Certifier could not certify solution"
 
 
-def test_clipper_sdp_block(bunny_stereo_synthetic):
+def test_clipper_sdp(bunny_stereo_synthetic):
 
     points_c1 = bunny_stereo_synthetic["points_1"]
     points_c2 = bunny_stereo_synthetic["points_2"]
@@ -479,9 +479,9 @@ def test_clipper_sdp_block(bunny_stereo_synthetic):
     data_association_config = config.data_association_config
     data_association_config.invariant_epsilon = 0.002
     data_association_config.invariant_sigma = 0.001
-    clipper_sdp_block = ClipperSDPBlock(data_association_config)
+    clipper_block = ClipperBlock(data_association_config)
     # Run the CLIPPER SDP block to get inliers and the solution u
-    inliers, u = clipper_sdp_block.forward(
+    inliers, u = clipper_block.run_sdp(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
     )
@@ -490,7 +490,7 @@ def test_clipper_sdp_block(bunny_stereo_synthetic):
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
-    result = clipper_sdp_block.certify_solution(soln=u, check_constraints=True)
+    result = clipper_block.certify_solution(soln=u, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
 
 
