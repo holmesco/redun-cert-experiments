@@ -220,6 +220,43 @@ class ClipperBlock(DataAssociationBlock):
             thresh = np.max(U) / 2
             inliers = torch.from_numpy(U[:,0] > thresh).bool()  # (N,)
         return inliers, U
+    
+    def inliers_to_solution(self, inliers: torch.Tensor):
+        """Convert inlier mask to solution vector for the max clique problem defined by M.
+        This is done by identfying the max eigenvector of the submatrix of M corresponding to the inliers, and embedding it into the full solution vector.
+        Args:
+            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
+        Returns:
+            soln (np.ndarray): Solution vector for the max clique problem, of shape (N,).
+            cost (float): Cost of the solution, defined as -x^T M x.
+        """
+        if self.M is None:
+            raise ValueError(
+                "Affinity matrix has not been set up. Call forward() first."
+            )
+            
+        # Select submatrix of M corresponding to inliers
+        inlier_idx = np.where(inliers.cpu().numpy())[0]
+        M_sub = self.M[np.ix_(inlier_idx, inlier_idx)]
+
+        assert np.all(M_sub > 0), "Cost submatrix contains non-positive elements"
+
+        # Power iteration for Perron vector
+        v = np.ones(len(inlier_idx))
+        v /= np.linalg.norm(v)
+        for _ in range(1000):
+            v_new = M_sub @ v
+            v_new /= np.linalg.norm(v_new)
+            if np.linalg.norm(v_new - v) < 1e-9:
+                break
+            v = v_new
+        v = v_new
+        cost = -float(v @ M_sub @ v)
+
+        # Embed Perron vector into full solution
+        soln = np.zeros(self.M.shape[0])
+        soln[inlier_idx] = v
+        return soln, cost
 
     def get_affinity(self):
         """Get the affinity matrix from the CLIPPER block.
