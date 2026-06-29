@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 import csv
 
+import torch
 import numpy as np
 import yaml
 from matplotlib import pyplot as plt
@@ -401,6 +402,7 @@ class EurocPreprocess:
         Disparity images are written to a new `disparities` directory alongside
         the `cam0` and `cam1` directories, using the same file names as the
         camera images referenced by `self.cam0.timestamp_to_file`.
+        Disparity images are stored as 16-bit PNGs with a scale factor of 256.0, so that the original float32 values can be recovered later.
         """
         disparity_dir = self.mav0_path / "disparities"
         disparity_dir.mkdir(parents=True, exist_ok=True)
@@ -524,6 +526,8 @@ class EurocPreprocess:
     def get_disp_at_timestamp(self, timestamp: int) -> np.ndarray:
         """Get the disparity image at a given timestamp.
         The disparity image is expected to be stored in the `disparities` directory.
+        Assumed format of stored disparity images is 16-bit PNG with a scale factor of 256.0.
+        This function reads the disparity image, converts it to float32, and scales it back to the original values.
         """
         cam0_path = self.cam0.timestamp_to_file.get(timestamp)
         if cam0_path is None:
@@ -537,7 +541,9 @@ class EurocPreprocess:
         disparity = cv2.imread(str(disparity_path), cv2.IMREAD_UNCHANGED)
         if disparity is None:
             raise IOError(f"Failed to read disparity image: {disparity_path}")
-
+        
+        disparity = disparity.astype(np.float32) / 256.0
+            
         return disparity
 
     def rectify_image_pair(
@@ -575,10 +581,10 @@ def disparity_interactive(ds: EurocPreprocess, index=1000):
 
     # Create trackbars (sliders)
     cv2.createTrackbar(
-        "numDisparities", "SGBM_Tuner", 1, 16, nothing
+        "numDisparities", "SGBM_Tuner", 1, 20, nothing
     )  # Will be multiplied by 16
     cv2.createTrackbar(
-        "blockSize", "SGBM_Tuner", 2, 10, nothing
+        "blockSize", "SGBM_Tuner", 2, 20, nothing
     )  # Will be converted to odd number (2*x + 1)
     cv2.createTrackbar("uniquenessRatio", "SGBM_Tuner", 15, 30, nothing)
     cv2.createTrackbar("speckleWindowSize", "SGBM_Tuner", 100, 200, nothing)
@@ -658,6 +664,20 @@ def make_disparity_plots(ds: EurocPreprocess, index, reprocess=False):
     axes[1, 0].imshow(disparity, cmap="jet", alpha=0.5)
     plt.show()
 
+def save_images(ds: EurocPreprocess, index, rectify=True):
+    timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
+    im0, im1 = ds.get_image_at_timestamp(timestamp, rectify=rectify)
+
+    output_dir = Path("/workspace/experiments")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    im0_path = output_dir / f"cam0_{timestamp}.png"
+    im1_path = output_dir / f"cam1_{timestamp}.png"
+
+    cv2.imwrite(str(im0_path), im0)
+    cv2.imwrite(str(im1_path), im1)
+
+    print(f"Saved images to {im0_path} and {im1_path}")
 
 if __name__ == "__main__":
     root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
@@ -665,12 +685,14 @@ if __name__ == "__main__":
     # ds.plot_groundtruth_trajectory()
 
     # Disparity Tuning:
-    # disparity_interactive(ds, 2300)
+    disparity_interactive(ds, 400)
 
     # Disparity Test:
-    # make_disparity_plots(ds, 0, reprocess=False)
+    # make_disparity_plots(ds, 400, reprocess=True)
 
     # Process all disparities and save to disk:
-    ds.process_disparities()
+    # ds.process_disparities()
+    
+    # save_images(ds, 400, rectify=True)
 
     print("done")

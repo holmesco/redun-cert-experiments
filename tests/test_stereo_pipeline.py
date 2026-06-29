@@ -18,15 +18,16 @@ from stereo_loc.FeatureExtractorAndMatcher import (
 from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
 from stereo_loc.DataAssociationBlocks import (
     ClipperBlock,
-    ClipperSDPBlock,
     DataAssociationConfig,
+    DataAssociationMethod,
 )
-from stereo_loc.AnalyticCenterParamsConfig import LinearSolverType
+
 from utils.stereo_camera_model import (
     StereoCameraConfig,
     StereoCameraModel,
     get_disparity,
 )
+from stereo_loc.EurocDataloader import EurocDataset
 from stereo_loc.PointCloudRegistrationBlock import (
     PointCloudRegistrationBlock,
     PointCloudRegistrationConfig,
@@ -73,7 +74,6 @@ def image_to_tensor(img: np.ndarray) -> torch.Tensor:
     img_t = img_t.unsqueeze(0)  # (1,H,W)
     img_t = img_t / 255.0
     return img_t
-
 
 
 def test_plot_bunny_fixture(bunny_stereo_synthetic):
@@ -357,34 +357,41 @@ def test_stereo_pipeline(euroc_data):
     """Test the full stereo localization pipeline on a pair of Euroc images.
     No Certification performed."""
     with torch.no_grad():
-        ds = euroc_data
-        # Compute transform for one step
-        timestamp0 = ds.cam0.timestamps[1000]
-        timestamp1 = ds.cam1.timestamps[1010]
-        T_01 = ds.get_relative_transform(timestamp0, timestamp1, camera_frame=True)
-        im0_L_t, im0_R_t, im0_L, im0_R = get_euroc_stereo_image(ds, timestamp0)
-        im1_L_t, im1_R_t, im1_L, im1_R = get_euroc_stereo_image(ds, timestamp1)
-        images = [im0_L_t.float(), im1_L_t.float()]
-        disp0 = get_disparity(im0_L, im0_R).float().to("cuda")
-        disp1 = get_disparity(im1_L, im1_R).float().to("cuda")
-
-        # Load Test config
+        print("Gathering EuRoC dataset info...")
+        euroc_preproc = euroc_data
+        # get dataset object
+        euroc_dataset = EurocDataset(euroc_preproc, frame_interval=10)
+        # Get the timestamps for the two frames
+        time, time_interval, img0_L, img1_L, disp0, disp1, T_src_trg_gt_np = (
+            euroc_dataset[1000]
+        )
+        images = [
+            image_to_tensor(img0_L).to("cuda"),
+            image_to_tensor(img1_L).to("cuda"),
+        ]
+        disp0 = disp0.to("cuda")
+        disp1 = disp1.to("cuda")
+        print("Setting up stereo pipeline...")
+        # Set up config
         config = load_config(config_file)
+        # Turn on debug mode to visualize intermediate results
+        config.debug = True
         # Get stereo camera config from dataset
-        config.stereo_camera_config = ds.get_stereo_cam_config()
+        config.stereo_camera_config = euroc_preproc.get_stereo_cam_config()
+        # Use SDP to get associations so that we can test out the certifier
+        config.data_association_config.method = DataAssociationMethod.CLIPPER_SDP
         # Set up the stereo pipeline
         pipeline = StereoPipeline(config)
         # Initialize with ground truth transform
-        T_src_trg_gt = Transformation(T_ba=T_01)
-
+        print("Running stereo pipeline...")
         output = pipeline.forward(
             images=images,
-            disparities=[disp0.float(), disp1.float()],
-            T_init=T_01,  # initial guess for the relative transform
+            disparities=[disp0, disp1],
+            T_init=T_src_trg_gt_np,  # initial guess for the relative transform
         )
-
         # Check that the estimated transform is close to the ground truth
         T_src_trg = Transformation(T_ba=output.relative_transform)
+        T_src_trg_gt = Transformation(T_ba=T_src_trg_gt_np)
         xi_error = (T_src_trg.inverse() @ T_src_trg_gt).vec()
         trans_error = np.linalg.norm(xi_error[:3])
         rot_error = np.linalg.norm(xi_error[3:])
