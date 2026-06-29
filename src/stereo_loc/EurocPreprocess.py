@@ -10,6 +10,7 @@ from typing import List
 from pathlib import Path
 from typing import Any
 import csv
+import time
 
 import torch
 import numpy as np
@@ -19,6 +20,7 @@ from scipy.spatial.transform import Rotation, RigidTransform
 import cv2
 
 from utils.stereo_camera_model import get_disparity, StereoCameraConfig
+from utils.raft_stereo_interface import build_raft_model, run_raft_stereo, raft_stereo_preproc_img
 
 
 @dataclass(frozen=True)
@@ -99,11 +101,12 @@ class EurocPreprocess:
         stereo_params: Path = Path(
             "/workspace/experiments/data/Euroc/EurocStereo.yaml"
         ),
+        raft_stereo_ckpt_path: Path | None = None,
     ):
         self.root = Path(path)
         if not self.root.exists():
             raise FileNotFoundError(f"Euroc dataset path not found: {self.root}")
-
+        self.raft_stereo_ckpt_path = raft_stereo_ckpt_path
         seq_dir = self._resolve_sequence_root(self.root)
         mav0_dir = seq_dir / "mav0"
         cam0_dir = mav0_dir / "cam0"
@@ -396,7 +399,7 @@ class EurocPreprocess:
 
         return T_b0_b1
 
-    def process_disparities(self) -> list[Path]:
+    def process_disparities(self, use_raft=True) -> list[Path]:
         """Compute and store a disparity image for each stereo pair in the dataset.
 
         Disparity images are written to a new `disparities` directory alongside
@@ -407,6 +410,21 @@ class EurocPreprocess:
         disparity_dir = self.mav0_path / "disparities"
         disparity_dir.mkdir(parents=True, exist_ok=True)
 
+        if use_raft:
+            if self.raft_stereo_ckpt_path is None:
+                raise ValueError(
+                    "RAFT-Stereo checkpoint path not provided. Cannot run RAFT-Stereo."
+                )
+            # Load RAFT-Stereo model and weights
+            if not self.raft_stereo_ckpt_path.exists():
+                raise FileNotFoundError(
+                    f"RAFT-Stereo checkpoint not found: {self.raft_stereo_ckpt_path}"
+                )
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = build_raft_model(self.raft_stereo_ckpt_path, device=device)
+            model.eval()
+
+        # Set up bar
         saved_paths: list[Path] = []
         total = len(self.cam0.timestamps)
 
@@ -421,9 +439,19 @@ class EurocPreprocess:
             )
 
         i = 0
+        proc_times = []
         for timestamp in self.cam0.timestamps:
             img0, img1 = self.get_image_at_timestamp(timestamp, rectify=True)
-            disparity = get_disparity(img0, img1, plot=False)
+            if use_raft:
+                # Convert images to torch tensors and run RAFT-Stereo
+                img0_tensor =raft_stereo_preproc_img(img0, device=device)
+                img1_tensor = raft_stereo_preproc_img(img1, device=device)
+                disparity, time = run_raft_stereo(model, img0_tensor, img1_tensor)
+                proc_times.append(time)
+            else:
+                t0 = time.time()
+                disparity = get_disparity(img0, img1, plot=False)
+                proc_times.append(time.time() - t0)
 
             # Store disparity as a 16-bit PNG with a fixed scale factor so the
             # values can be recovered later.
@@ -440,8 +468,9 @@ class EurocPreprocess:
             i += 1
             print_progress(i)
 
-        if total > 0:
-            print()
+        print("\nDisparity processing complete.")
+        avg_time = sum(proc_times) / len(proc_times) if proc_times else 0.0
+        print(f"Average processing time per image pair: {avg_time:.4f} seconds")
 
         return saved_paths
 
@@ -541,9 +570,9 @@ class EurocPreprocess:
         disparity = cv2.imread(str(disparity_path), cv2.IMREAD_UNCHANGED)
         if disparity is None:
             raise IOError(f"Failed to read disparity image: {disparity_path}")
-        
+
         disparity = disparity.astype(np.float32) / 256.0
-            
+
         return disparity
 
     def rectify_image_pair(
@@ -664,6 +693,7 @@ def make_disparity_plots(ds: EurocPreprocess, index, reprocess=False):
     axes[1, 0].imshow(disparity, cmap="jet", alpha=0.5)
     plt.show()
 
+
 def save_images(ds: EurocPreprocess, index, rectify=True):
     timestamp = list(ds.cam0.timestamp_to_file.keys())[index]
     im0, im1 = ds.get_image_at_timestamp(timestamp, rectify=rectify)
@@ -679,20 +709,22 @@ def save_images(ds: EurocPreprocess, index, rectify=True):
 
     print(f"Saved images to {im0_path} and {im1_path}")
 
+
 if __name__ == "__main__":
     root = Path("/workspace/experiments/data/Euroc/MH_01_easy")
-    ds = EurocPreprocess(root)
+    ckpt = Path("/workspace/experiments/data/raft_stereo/raftstereo-middlebury.pth")
+    ds = EurocPreprocess(root, raft_stereo_ckpt_path=ckpt)
     # ds.plot_groundtruth_trajectory()
 
     # Disparity Tuning:
-    disparity_interactive(ds, 400)
+    # disparity_interactive(ds, 400)
 
     # Disparity Test:
     # make_disparity_plots(ds, 400, reprocess=True)
 
     # Process all disparities and save to disk:
-    # ds.process_disparities()
-    
+    ds.process_disparities(use_raft=True)
+
     # save_images(ds, 400, rectify=True)
 
     print("done")
