@@ -1,3 +1,5 @@
+verbose: True
+debug: True
 registration_config:
   certify: True
   verbose: True
@@ -25,27 +27,32 @@ registration_config:
     # Adaptive perturbation
     adaptive_perturb: False
     eps_mult_min: 1e-3
+feature_extractor_config:
+  max_num_keypoints: 512
 data_association_config:
   certify: True
+  method: CLIPPER_SDP
   clipper_config:
     threshold: False
+    invariant_epsilon: 0.20 
+    invariant_sigma: 0.05
   # Analytic Centering parameters
   ac_params:
     verbose: True
     lin_solver: MFCG_LRP
-    lin_solve_max_iter: 200
-    lin_solve_tol: 1e-3
+    lin_solve_max_iter: 400
+    lin_solve_tol: 1e-5
     delta: 1e-6
     rescale_lin_sys: False
-    max_iter: 6
+    max_iter: 20
     # Early stopping local
     early_stop_angle: True
-    max_angle: 1e-2
+    max_angle: 5e-4
     # Perturbation parameters
-    perturb_constraints: False
+    perturb_constraints: True
     perturb_cost: True
     eps_cost: 1e-6
-    eps_constr: 1e-5
+    eps_constr: 1e-6
     # Preconditioner parameters
     lrp_params:
       tau: 1e-6
