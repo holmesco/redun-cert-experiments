@@ -340,7 +340,7 @@ def print_method_info(result):
     )
 
 
-def compare_methods(index0=1000, index1=1030, plot=False):
+def compare_with_sdp(index0=1000, index1=1030, plot=False):
     with torch.no_grad():
         clipper = _run_pipeline_for_method(
             index0, index1, DataAssociationMethod.CLIPPER
@@ -387,5 +387,5 @@ if __name__ == "__main__":
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-    # run_stereo_pipeline(index0=2000, index1=2100, plot=True)
-    compare_methods(index0=2000, index1=2100, plot=True)
+    run_stereo_pipeline(index0=2000, index1=2100, plot=True)
+    # compare_with_sdp(index0=2000, index1=2100, plot=True)

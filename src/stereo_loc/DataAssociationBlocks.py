@@ -46,6 +46,10 @@ class DataAssociationConfig:
     )
     # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
     rank_ratio: float = 1e-6
+    # inlier to solution conversion iterations
+    inlier_to_solution_iters: int = 100
+    # inlier to solution tolerance
+    inlier_to_solution_tol: float = 1e-9
 
 class DataAssociationBlock:
     """Data association block that takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
@@ -239,15 +243,15 @@ class ClipperBlock(DataAssociationBlock):
         inlier_idx = np.where(inliers.cpu().numpy())[0]
         M_sub = self.M[np.ix_(inlier_idx, inlier_idx)]
 
-        assert np.all(M_sub > 0), "Cost submatrix contains non-positive elements"
+        assert np.all(M_sub > 0), "Cost submatrix contains non-positive elements. Inliers do not form a clique."
 
-        # Power iteration for Perron vector
+        # Power iteration to get Perron vector
         v = np.ones(len(inlier_idx))
         v /= np.linalg.norm(v)
-        for _ in range(1000):
+        for i in range(self.config.inlier_to_solution_iters):
             v_new = M_sub @ v
             v_new /= np.linalg.norm(v_new)
-            if np.linalg.norm(v_new - v) < 1e-9:
+            if np.linalg.norm(v_new - v) < self.config.inlier_to_solution_tol:
                 break
             v = v_new
         v = v_new
