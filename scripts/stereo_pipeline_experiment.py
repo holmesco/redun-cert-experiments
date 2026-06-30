@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Tuple, List
 from pathlib import Path
 import os
@@ -18,7 +19,7 @@ os.environ["DISPLAY"] = ":32"
 
 from stereo_loc.EurocPreprocess import EurocPreprocess
 from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
-from stereo_loc.EurocDataloader import EurocDataset, collate_skip_none
+from stereo_loc.EurocDataloader import EurocDataset
 
 ROOT = Path(__file__).resolve().parents[1]
 default_pipeline_cfg_path = (
@@ -34,11 +35,17 @@ class PoseInitializationMethod(Enum):
 
 @dataclass
 class StereoPipelineExperimentConfig:
+    # Name of the experiment, used for saving results
     experiment_name: str = "default_experiment"
+    # Path to the YAML file containing overrides for the stereo pipeline configuration
     override_path: Path | None = None
+    # Path to the dataset to be used for the experiment
     dataset_path: Path | None = None
+    # Interval between frames in the dataset for registration
     frame_interval: int = 1
-    interval: Tuple[int, int] | None = None
+    # Limits on the indices of the dataset to be used for the experiment (inclusive). If None, use the entire dataset.
+    index_bounds: Tuple[int, int] | None = None
+    # Method for initializing the pose for the registration algorithm
     pose_init: PoseInitializationMethod = PoseInitializationMethod.IDENTITY
 
 
@@ -84,16 +91,16 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
     euroc_preprocess = EurocPreprocess(ROOT / cfg.dataset_path)
     euroc_dataset = EurocDataset(euroc_preprocess, frame_interval=cfg.frame_interval)
     # Load default configuration
-    pipeline_cgf = load_config(default_pipeline_cfg_path)
+    pipeline_cfg = load_config(default_pipeline_cfg_path)
     # Load any overrides specified in the experiment config
-    pipeline_cgf = load_pipeline_overrides(pipeline_cgf, cfg.override_path)
+    pipeline_cfg = load_pipeline_overrides(pipeline_cfg, cfg.override_path)
     # Get stereo camera config from dataset
-    pipeline_cgf.stereo_camera_config = euroc_preprocess.get_stereo_cam_config()
+    pipeline_cfg.stereo_camera_config = euroc_preprocess.get_stereo_cam_config()
     # Initialize the stereo pipeline
-    pipeline = StereoPipeline(pipeline_cgf)
-    # Restrict to interval if specified
-    if cfg.interval is not None:
-        start, end = cfg.interval
+    pipeline = StereoPipeline(pipeline_cfg)
+    # Restrict to bounds if specified
+    if cfg.index_bounds is not None:
+        start, end = cfg.index_bounds
         dataset = Subset(euroc_dataset, range(start, end + 1))
     else:
         dataset = euroc_dataset
@@ -134,9 +141,11 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         # Check that the estimated transform is close to the ground truth
         T_src_trg = Transformation(T_ba=output.relative_transform)
         T_src_trg_gt = Transformation(T_ba=T_src_trg_gt)
-        xi_error = (T_src_trg.inverse() @ T_src_trg_gt).vec()
-        trans_error = np.linalg.norm(xi_error[:3])
-        rot_error = np.linalg.norm(xi_error[3:])
+        # Relative Rotation Error in radians
+        rot_error = np.arccos((np.trace(T_src_trg_gt.C_ba().T @ T_src_trg.C_ba())-1)/2)
+        trans_error = np.linalg.norm(T_src_trg_gt.r_ab_inb() - T_src_trg.r_ab_inb())
+        rot_delta = np.arccos((np.trace(T_src_trg_gt.C_ba())-1)/2)
+        trans_delta = np.linalg.norm(T_src_trg_gt.r_ab_inb())
         # Store results
         output_data.append(
             dict(
@@ -145,22 +154,32 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
                 time_interval=time_interval,
                 trans_error=trans_error,
                 rot_error=rot_error,
+                trans_delta=trans_delta,
+                rot_delta=rot_delta,
                 cert_da=output.data_association_certified,
                 cert_reg=output.registration_certified,
+                num_inliers=output.num_inliers,
             )
         )
 
     # Convert data to dataframe
     df = pd.DataFrame(output_data)
-    output_csv_path = (
-        ROOT / "results" / "stereo_loc" / f"{cfg.experiment_name}_results.csv"
-    )
-    output_csv_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_csv_path, index=False)
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M")
+    run_dir = ROOT / "results" / "stereo_loc" / cfg.experiment_name / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    df.to_csv(run_dir / "results.csv", index=False)
+    OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
+    OmegaConf.save(OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml")
 
 
 if __name__ == "__main__":
-    exp_config = load_experiment_config(
-        ROOT / "configs" / "stereo_experiments" / "test.yaml"
-    )
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("filename", nargs="?", default="test.yaml")
+    args = parser.parse_args()
+
+    exp_cfg_path = ROOT / "configs" / "stereo_experiments" / args.filename
+    exp_config = load_experiment_config(exp_cfg_path)
     run_experiment(exp_config)
