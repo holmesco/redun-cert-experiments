@@ -1,0 +1,3 @@
+dataset_path: "data/Euroc/MH_01_easy"
+interval: [1000,1010]
+override_path: "configs/stereo_pipeline/test_override.yaml"

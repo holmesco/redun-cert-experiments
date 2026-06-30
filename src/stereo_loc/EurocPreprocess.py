@@ -399,7 +399,7 @@ class EurocPreprocess:
 
         return T_b0_b1
 
-    def process_disparities(self, use_raft=True) -> list[Path]:
+    def process_disparities(self, use_raft=True, device=None) -> list[Path]:
         """Compute and store a disparity image for each stereo pair in the dataset.
 
         Disparity images are written to a new `disparities` directory alongside
@@ -407,7 +407,10 @@ class EurocPreprocess:
         camera images referenced by `self.cam0.timestamp_to_file`.
         Disparity images are stored as 16-bit PNGs with a scale factor of 256.0, so that the original float32 values can be recovered later.
         """
-        disparity_dir = self.mav0_path / "disparities"
+        if use_raft:
+            disparity_dir = self.mav0_path / "disparities"
+        else:
+            disparity_dir = self.mav0_path / "disparities_sgbm"
         disparity_dir.mkdir(parents=True, exist_ok=True)
 
         if use_raft:
@@ -420,7 +423,8 @@ class EurocPreprocess:
                 raise FileNotFoundError(
                     f"RAFT-Stereo checkpoint not found: {self.raft_stereo_ckpt_path}"
                 )
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if device is None:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
             model = build_raft_model(self.raft_stereo_ckpt_path, device=device)
             model.eval()
 
@@ -446,8 +450,8 @@ class EurocPreprocess:
                 # Convert images to torch tensors and run RAFT-Stereo
                 img0_tensor =raft_stereo_preproc_img(img0, device=device)
                 img1_tensor = raft_stereo_preproc_img(img1, device=device)
-                disparity, time = run_raft_stereo(model, img0_tensor, img1_tensor)
-                proc_times.append(time)
+                disparity, proc_time = run_raft_stereo(model, img0_tensor, img1_tensor)
+                proc_times.append(proc_time)
             else:
                 t0 = time.time()
                 disparity = get_disparity(img0, img1, plot=False)
@@ -687,7 +691,7 @@ def make_disparity_plots(ds: EurocPreprocess, index, reprocess=False):
     fig.tight_layout()
 
     if reprocess:
-        disparity = get_disparity(im0_rect, im1_rect, plot=False)
+        disparity = get_disparity(im0_rect, im1_rect, plot=False)[0]
     else:
         disparity = ds.get_disp_at_timestamp(timestamp)
     axes[1, 0].imshow(disparity, cmap="jet", alpha=0.5)
@@ -720,10 +724,10 @@ if __name__ == "__main__":
     # disparity_interactive(ds, 400)
 
     # Disparity Test:
-    # make_disparity_plots(ds, 400, reprocess=True)
+    make_disparity_plots(ds, 2000, reprocess=False)
 
     # Process all disparities and save to disk:
-    ds.process_disparities(use_raft=True)
+    # ds.process_disparities(use_raft=False, device="cuda:1")
 
     # save_images(ds, 400, rectify=True)
 
