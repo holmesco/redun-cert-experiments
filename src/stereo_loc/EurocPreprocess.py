@@ -364,7 +364,7 @@ class EurocPreprocess:
         )
 
     def get_relative_transform(
-        self, timestamp0, timestamp1, camera_frame=False
+        self, timestamp0, timestamp1, camera_frame=False, get_closest=True
     ) -> np.ndarray:
         """Get the relative transform between two groundtruth poses by index.
         If camera_frame is True, the transform is returned in the left camera frame using T_BS. Otherwise, it is returned in the robot body frame.
@@ -372,12 +372,28 @@ class EurocPreprocess:
         if self.gt_data is None:
             raise ValueError("Groundtruth data not loaded.")
         # Map from timestamps to indices
-        index0 = self.gt_data.timestamps_to_index.get(timestamp0)
-        index1 = self.gt_data.timestamps_to_index.get(timestamp1)
-        if index0 is None:
-            raise KeyError(f"timestamp0 {timestamp0} not found in groundtruth data.")
-        if index1 is None:
-            raise KeyError(f"timestamp1 {timestamp1} not found in groundtruth data.")
+        if get_closest:
+            ts = self.gt_data.timestamps
+            index0 = self.gt_data.timestamps_to_index.get(timestamp0)
+            if index0 is None:
+                i0 = int(np.searchsorted(ts, timestamp0))
+                if i0 > 0 and (i0 == len(ts) or abs(ts[i0 - 1] - timestamp0) <= abs(ts[i0] - timestamp0)):
+                    i0 -= 1
+                index0 = i0
+
+            index1 = self.gt_data.timestamps_to_index.get(timestamp1)
+            if index1 is None:
+                i1 = int(np.searchsorted(ts, timestamp1))
+                if i1 > 0 and (i1 == len(ts) or abs(ts[i1 - 1] - timestamp1) <= abs(ts[i1] - timestamp1)):
+                    i1 -= 1
+                index1 = i1
+        else:
+            index0 = self.gt_data.timestamps_to_index.get(timestamp0)
+            index1 = self.gt_data.timestamps_to_index.get(timestamp1)
+            if index0 is None:
+                raise KeyError(f"timestamp0 {timestamp0} not found in groundtruth data.")
+            if index1 is None:
+                raise KeyError(f"timestamp1 {timestamp1} not found in groundtruth data.")
 
         T_rs = self.gt_data.T_rs
         if index0 < 0 or index0 >= len(T_rs):

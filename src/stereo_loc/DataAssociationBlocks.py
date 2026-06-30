@@ -2,8 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import numpy as np
 import torch
-from scipy.sparse import csc_array
-
+from scipy.sparse import csc_array, coo_array, eye_array
 import clipperpy
 
 from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
@@ -277,34 +276,34 @@ class ClipperBlock(DataAssociationBlock):
     
 
 def get_maxclique_sdp_constraints(M: np.ndarray):
-    """Get the constraints of the maximum clique problem.
-
-    Parameters
-    ----------
-    M : np.ndarray
-        Affinity matrix of the problem.
-
-    Returns
-    -------
-    constraints : list of scipy.sparse.csc_array
-        List of sparse matrices representing the constraints of the problem.
-    values : np.ndarray
-        Values corresponding to the constraints (e.g., 0 for non-edges, 1 for trace constraint).
-    """
-    # Find indices where M is zero and j > i
-    rows, cols = np.where((M == 0) & (np.triu(np.ones(M.shape, dtype=bool), k=1)))
+    """Optimized version using vectorized index extraction and fast COO construction."""
+    n = M.shape[0]
+    
+    # 1. Get upper triangle indices where M == 0 efficiently
+    iu_rows, iu_cols = np.triu_indices_from(M, k=1)
+    non_edge_mask = (M[iu_rows, iu_cols] == 0)
+    rows = iu_rows[non_edge_mask]
+    cols = iu_cols[non_edge_mask]
+    
+    num_non_edges = len(rows)
+    
+    # 2. Fast generation of symmetric sparse constraints
+    # Reusing the same data and shape allocations minimizes overhead
+    ones = np.ones(2, dtype=np.float64)
+    shape = (n, n)
+    
+    # Construct COO arrays first (fastest for initialization), then convert to CSC
     constraints = [
-        csc_array(([1.0, 1.0], ([r, c], [c, r])), shape=M.shape)
+        coo_array((ones, ([r, c], [c, r])), shape=shape).tocsc()
         for r, c in zip(rows, cols)
     ]
 
-    # Preallocate values array
-    values = np.zeros(len(constraints) + 1)
-    values[:-1] = 0.0  # Non-edges
-    values[-1] = 1.0  # Trace constraint
+    # 3. Add the trace constraint (Identity matrix)
+    # Using eye_array is faster and cleaner than csc_array(np.eye(n))
+    constraints.append(eye_array(n, format="csc"))
 
-    # Add the trace constraint
-    sparse_identity = csc_array(np.eye(M.shape[0]))
-    constraints.append(sparse_identity)
+    # 4. Preallocate values array directly
+    values = np.zeros(num_non_edges + 1, dtype=np.float64)
+    values[-1] = 1.0  # Trace constraint
 
     return constraints, values

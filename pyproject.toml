@@ -64,9 +64,9 @@ cert-tools = { workspace = true, editable = true }
 poly-matrix = { workspace = true }
 mwcerts = { workspace = true }
 lightglue = { workspace = true }
-ranktools = { path = "../ranktools" }
 clipperpy = { workspace = true }
 raft-stereo = { workspace = true }
+ranktools = { path = "../ranktools" }
 
 [tool.uv.workspace]
 members = [
