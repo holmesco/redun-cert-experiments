@@ -85,3 +85,8 @@ packages = ["src/max_clique","src/mat_weight_loc","src/utils","src/stereo_loc"]
 line-length = 88
 target-version = ["py311", "py312"]
 include = '\\.pyi?$'
+
+[dependency-groups]
+dev = [
+    "line-profiler>=5.0.2",
+]

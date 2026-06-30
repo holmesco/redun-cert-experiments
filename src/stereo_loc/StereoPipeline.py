@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 from pathlib import Path
 
 
+
 from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorConfig,
     FeatureMatcherConfig,
@@ -96,6 +97,8 @@ class StereoPipelineOutput:
     # Certification flags
     data_association_certified: bool = False
     registration_certified: bool = False
+    # Inlier count
+    num_inliers: int = 0
     # Additional information from the registration block, such as the number of inliers, etc.
     registration_info: dict = None
     # Debug information for the stereo pipeline.
@@ -246,6 +249,7 @@ class StereoPipeline:
             data_association_certified=data_association_certified,
             registration_certified=registration_certified,
             registration_info=info,
+            num_inliers=torch.sum(inliers).item(),
         )
 
         # Generate debug output if requested
@@ -259,7 +263,7 @@ class StereoPipeline:
                 inv_cov_weights=inv_cov_weights.squeeze(0),  # (K, 3, 3)
                 cert_result_association=cert_result_da,
                 cert_result_registration=cert_result_reg,
-                da_soln = soln,
+                da_soln=soln,
                 M=self.data_association.M,
             )
             output.debug_info = debug_info

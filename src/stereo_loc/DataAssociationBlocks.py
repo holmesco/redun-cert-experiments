@@ -6,7 +6,7 @@ from scipy.sparse import csc_array, coo_array, eye_array
 import clipperpy
 
 from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
-from ranktools import AnalyticCenterResult, AnalyticCenter
+from ranktools import AnalyticCenterResult, AnalyticCenter, MaxCliqueCertifier
 from cert_tools.sdp_solvers import solve_sdp_fusion
 
 
@@ -19,6 +19,7 @@ class DataAssociationMethod(Enum):
 @dataclass
 class ClipperConfig:
     """Configuration for the CLIPPER data association module."""
+
     # CLIPPER invariant parameters
     invariant_epsilon: float = 0.3  # 30 cm, correspoding to max allowable discrepancy
     invariant_sigma: float = (
@@ -33,6 +34,7 @@ class ClipperConfig:
 @dataclass
 class DataAssociationConfig:
     """Configuration for the CLIPPER data association module."""
+
     # Method for data association. Options: "clipper", "ransac"
     method: DataAssociationMethod = DataAssociationMethod.CLIPPER
     # Config for clipper data association
@@ -49,6 +51,7 @@ class DataAssociationConfig:
     inlier_to_solution_iters: int = 100
     # inlier to solution tolerance
     inlier_to_solution_tol: float = 1e-9
+
 
 class DataAssociationBlock:
     """Data association block that takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
@@ -92,8 +95,7 @@ class DataAssociationBlock:
         ), "Either x or inliers must be provided."
         # Retrieve the affinity matrix from the last forward pass
         M = self.get_affinity()
-        # Get the constraints for the max clique problem
-        constraints, values = get_maxclique_sdp_constraints(M)
+
         # Convert inliers to feasible solution if they are provided
         if inliers is not None:
             inliers_np = inliers.cpu().numpy()[:, None]
@@ -102,6 +104,8 @@ class DataAssociationBlock:
             x = soln
         # Check constraints
         if check_constraints:
+            # Get the constraints for the max clique problem
+            constraints, values = get_maxclique_sdp_constraints(M)
             for i, (A, b) in enumerate(zip(constraints, values)):
                 assert np.abs(x.T @ A @ x - b) < 1e-10, f"Constraint {i} violated!"
         # Get the cost of the solution if not provided
@@ -109,7 +113,7 @@ class DataAssociationBlock:
             cost = -(x.T @ M @ x).item()
         # Set up central path certifier
         ac_params = self.config.ac_params.to_cpp_class()
-        certifier = AnalyticCenter(-M, cost, constraints, values, ac_params)
+        certifier = MaxCliqueCertifier(-M, cost, ac_params)
         # Certify the solution
         result = certifier.certify(x)
         return result
@@ -130,7 +134,6 @@ class ClipperBlock(DataAssociationBlock):
         params.rounding = self.config.clipper_config.clipper_rounding_method
         # define clipper object
         self.clipper = clipperpy.CLIPPER(invariant, params)
-        
 
     def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):
         """Set up the affinity matrix for the CLIPPER block. This is a separate function to allow for reusing the affinity matrix for certification.
@@ -212,18 +215,16 @@ class ClipperBlock(DataAssociationBlock):
         max_eigval = eigvals[-1]
         rank = np.sum(eigvals > self.config.rank_ratio * max_eigval)
         if rank > 1:
-            print(
-                f"Warning: SDP solution is not rank-1. Rank: {rank}"
-            )
+            print(f"Warning: SDP solution is not rank-1. Rank: {rank}")
         # Leading eigenvector (largest eigenvalue)
         U = eigvecs[:, -rank:] * np.sqrt(np.maximum(eigvals[-rank:], 0.0))
         # Convert to inlier mask
         inliers = None
         if rank == 1:
             thresh = np.max(U) / 2
-            inliers = torch.from_numpy(U[:,0] > thresh).bool()  # (N,)
+            inliers = torch.from_numpy(U[:, 0] > thresh).bool()  # (N,)
         return inliers, U
-    
+
     def inliers_to_solution(self, inliers: torch.Tensor):
         """Convert inlier mask to solution vector for the max clique problem defined by M.
         This is done by identfying the max eigenvector of the submatrix of M corresponding to the inliers, and embedding it into the full solution vector.
@@ -237,12 +238,14 @@ class ClipperBlock(DataAssociationBlock):
             raise ValueError(
                 "Affinity matrix has not been set up. Call forward() first."
             )
-            
+
         # Select submatrix of M corresponding to inliers
         inlier_idx = np.where(inliers.cpu().numpy())[0]
         M_sub = self.M[np.ix_(inlier_idx, inlier_idx)]
 
-        assert np.all(M_sub > 0), "Cost submatrix contains non-positive elements. Inliers do not form a clique."
+        assert np.all(
+            M_sub > 0
+        ), "Cost submatrix contains non-positive elements. Inliers do not form a clique."
 
         # Power iteration to get Perron vector
         v = np.ones(len(inlier_idx))
@@ -273,25 +276,24 @@ class ClipperBlock(DataAssociationBlock):
             )
         return self.M
 
-    
 
 def get_maxclique_sdp_constraints(M: np.ndarray):
     """Optimized version using vectorized index extraction and fast COO construction."""
     n = M.shape[0]
-    
+
     # 1. Get upper triangle indices where M == 0 efficiently
     iu_rows, iu_cols = np.triu_indices_from(M, k=1)
-    non_edge_mask = (M[iu_rows, iu_cols] == 0)
+    non_edge_mask = M[iu_rows, iu_cols] == 0
     rows = iu_rows[non_edge_mask]
     cols = iu_cols[non_edge_mask]
-    
+
     num_non_edges = len(rows)
-    
+
     # 2. Fast generation of symmetric sparse constraints
     # Reusing the same data and shape allocations minimizes overhead
     ones = np.ones(2, dtype=np.float64)
     shape = (n, n)
-    
+
     # Construct COO arrays first (fastest for initialization), then convert to CSC
     constraints = [
         coo_array((ones, ([r, c], [c, r])), shape=shape).tocsc()
