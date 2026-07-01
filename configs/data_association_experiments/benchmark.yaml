@@ -1,0 +1,14 @@
+experiment_name: "clipper_benchmark"
+experiment_type: CLIPPER_BENCHMARK
+ply_path: "data/bun10k.ply"
+seed: 0
+# CLIPPER invariant parameters (Euclidean distance invariant)
+invariant_sigma: 0.015
+invariant_epsilon: 0.05
+# Bounded normal noise parameters
+noise_sigma: 0.01
+noise_beta: 0.0554
+# Sweep parameters
+num_assocs: [64, 256, 512, 1024, 2048]
+outlier_ratios: [0.0, 0.2, 0.4, 0.8, 0.9]
+num_trials: 20

@@ -70,7 +70,7 @@ def test_clipper_block_threshold(bunny_stereo_synthetic):
     data_association_config = config.data_association_config
     data_association_config.invariant_epsilon = 0.02
     data_association_config.invariant_sigma = 0.01
-    data_association_config.clipper_config.threshold = True  # Enable thresholding
+    data_association_config.unweighted = True  # Enable thresholding
 
     clipper_block = ClipperBlock(data_association_config)
     inliers, x = clipper_block.run_clipper(

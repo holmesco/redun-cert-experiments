@@ -32,10 +32,9 @@ feature_extractor_config:
 data_association_config:
   certify: True
   method: CLIPPER_SDP
-  clipper_config:
-    threshold: False
-    invariant_epsilon: 0.20 
-    invariant_sigma: 0.05
+  unweighted: False
+  invariant_epsilon: 0.20
+  invariant_sigma: 0.05
   # Analytic Centering parameters
   ac_params:
     verbose: True

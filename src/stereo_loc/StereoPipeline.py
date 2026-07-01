@@ -7,7 +7,6 @@ from omegaconf import OmegaConf
 from pathlib import Path
 
 
-
 from stereo_loc.FeatureExtractorAndMatcher import (
     FeatureExtractorConfig,
     FeatureMatcherConfig,
@@ -199,7 +198,7 @@ class StereoPipeline:
         cert_result_da = None
         if self.config.data_association_config.certify:
             # if thresholding (converting to max clique problem), pass the inliers.
-            if self.config.data_association_config.clipper_config.threshold:
+            if self.config.data_association_config.unweighted:
                 cert_kwargs = dict(inliers=inliers)
             else:
                 cert_kwargs = dict(soln=soln)

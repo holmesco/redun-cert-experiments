@@ -33,7 +33,6 @@ from scipy.spatial.transform import Rotation
 
 from stereo_loc.DataAssociationBlocks import (
     ClipperBlock,
-    ClipperConfig,
     DataAssociationConfig,
     DataAssociationMethod,
 )
@@ -69,10 +68,8 @@ class BunnyExperimentConfig:
     data_association_config: DataAssociationConfig = field(
         default_factory=lambda: DataAssociationConfig(
             method=DataAssociationMethod.CLIPPER,
-            clipper_config=ClipperConfig(
-                invariant_sigma=0.015,
-                invariant_epsilon=0.05,
-            ),
+            invariant_sigma=0.015,
+            invariant_epsilon=0.05,
         )
     )
 

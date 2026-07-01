@@ -17,10 +17,12 @@ class DataAssociationMethod(Enum):
 
 
 @dataclass
-class ClipperConfig:
+class DataAssociationConfig:
     """Configuration for the CLIPPER data association module."""
 
-    # CLIPPER invariant parameters
+    # Method for data association. Options: "clipper", "ransac"
+    method: DataAssociationMethod = DataAssociationMethod.CLIPPER
+    # invariant parameters for defining graph
     invariant_epsilon: float = 0.3  # 30 cm, correspoding to max allowable discrepancy
     invariant_sigma: float = (
         0.15  # 15 cm, half the max allowable discrepancy, to get a good scoring function
@@ -28,17 +30,7 @@ class ClipperConfig:
     # CLIPPER rounding strategy
     clipper_rounding_method = clipperpy.Rounding.DSD_HEU
     # Threshold for converting to unweighted graph. (zero if not converting)
-    threshold: bool = False
-
-
-@dataclass
-class DataAssociationConfig:
-    """Configuration for the CLIPPER data association module."""
-
-    # Method for data association. Options: "clipper", "ransac"
-    method: DataAssociationMethod = DataAssociationMethod.CLIPPER
-    # Config for clipper data association
-    clipper_config: ClipperConfig = field(default_factory=ClipperConfig)
+    unweighted: bool = False
     # Certification flag for data association
     certify: bool = False
     # Parameters for the analytic centering certifier
@@ -48,9 +40,9 @@ class DataAssociationConfig:
     # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
     rank_ratio: float = 1e-6
     # inlier to solution conversion iterations
-    inlier_to_solution_iters: int = 100
+    clique_to_solution_iters: int = 100
     # inlier to solution tolerance
-    inlier_to_solution_tol: float = 1e-9
+    clique_to_solution_tol: float = 1e-9
 
 
 class DataAssociationBlock:
@@ -126,12 +118,12 @@ class ClipperBlock(DataAssociationBlock):
         super().__init__(config)
         # Set up invariant
         iparams = clipperpy.invariants.EuclideanDistanceParams()
-        iparams.sigma = self.config.clipper_config.invariant_sigma
-        iparams.epsilon = self.config.clipper_config.invariant_epsilon
+        iparams.sigma = self.config.invariant_sigma
+        iparams.epsilon = self.config.invariant_epsilon
         invariant = clipperpy.invariants.EuclideanDistance(iparams)
         # Define rounding strategy
         params = clipperpy.Params()
-        params.rounding = self.config.clipper_config.clipper_rounding_method
+        params.rounding = self.config.clipper_rounding_method
         # define clipper object
         self.clipper = clipperpy.CLIPPER(invariant, params)
 
@@ -155,7 +147,7 @@ class ClipperBlock(DataAssociationBlock):
         # Get matrix
         self.M = self.clipper.get_affinity_matrix()
         # thresholding to get unweighted graph if enabled
-        if self.config.clipper_config.threshold:
+        if self.config.unweighted:
             self.M = (self.M > 0.0).astype(float)
             # Set constraint and affinity matrix to thresholded values.
             self.clipper.set_matrix_data(M=self.M, C=self.M)
@@ -250,10 +242,10 @@ class ClipperBlock(DataAssociationBlock):
         # Power iteration to get Perron vector
         v = np.ones(len(inlier_idx))
         v /= np.linalg.norm(v)
-        for i in range(self.config.inlier_to_solution_iters):
+        for i in range(self.config.clique_to_solution_iters):
             v_new = M_sub @ v
             v_new /= np.linalg.norm(v_new)
-            if np.linalg.norm(v_new - v) < self.config.inlier_to_solution_tol:
+            if np.linalg.norm(v_new - v) < self.config.clique_to_solution_tol:
                 break
             v = v_new
         v = v_new

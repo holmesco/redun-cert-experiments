@@ -2,6 +2,5 @@ feature_extractor_config:
   max_num_keypoints: 500
 data_association_config:
   method: CLIPPER
-  clipper_config:
-    invariant_epsilon: 0.1
-    invariant_sigma: 0.05
+  invariant_epsilon: 0.1
+  invariant_sigma: 0.05

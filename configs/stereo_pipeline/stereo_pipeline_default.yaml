@@ -31,10 +31,9 @@ registration_config:
 data_association_config:
   method: CLIPPER
   certify: True
-  clipper_config:
-    threshold: False
-    invariant_epsilon: 3.0e-1
-    invariant_sigma: 1.5e-1
+  unweighted: False
+  invariant_epsilon: 3.0e-1
+  invariant_sigma: 1.5e-1
   # Analytic Centering for data association
   ac_params:
     verbose: True
