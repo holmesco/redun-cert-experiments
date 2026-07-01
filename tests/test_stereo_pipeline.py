@@ -17,7 +17,7 @@ from stereo_loc.FeatureExtractorAndMatcher import (
 )
 from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
 from stereo_loc.DataAssociationBlocks import (
-    ClipperBlock,
+    DataAssociationBlock,
     DataAssociationConfig,
     DataAssociationMethod,
 )
@@ -259,7 +259,7 @@ def test_3d_point_reconstruction_euroc(euroc_data, plot=True):
     clipper_cfg.invariant_sigma = (
         0.1  # set sigma to 10 cm to allow for some noise in the pairwise distances
     )
-    clipper_block = ClipperBlock(clipper_cfg)
+    clipper_block = DataAssociationBlock(clipper_cfg)
     inliers, soln = clipper_block.run_clipper(kpt_3D_0, kpt_3D_1)
 
     if plot:

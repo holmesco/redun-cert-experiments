@@ -32,7 +32,7 @@ from scipy.spatial.transform import Rotation
 
 
 from stereo_loc.DataAssociationBlocks import (
-    ClipperBlock,
+    DataAssociationBlock,
     DataAssociationConfig,
     DataAssociationMethod,
 )
@@ -247,8 +247,8 @@ def get_precision_recall(A: np.ndarray, Agt: np.ndarray) -> Tuple[float, float]:
 # ----------------------------------------------------------------------------
 
 
-def _make_clipper_block(cfg: BunnyExperimentConfig) -> ClipperBlock:
-    return ClipperBlock(cfg.data_association_config)
+def _make_clipper_block(cfg: BunnyExperimentConfig) -> DataAssociationBlock:
+    return DataAssociationBlock(cfg.data_association_config)
 
 
 def _associations_to_keypoints(

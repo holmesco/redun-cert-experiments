@@ -8,7 +8,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 config_file = ROOT / "configs" / "test_config.yaml"
 
-from stereo_loc.DataAssociationBlocks import ClipperBlock
+from stereo_loc.DataAssociationBlocks import DataAssociationBlock
 from stereo_loc.StereoPipeline import load_config
 from fixtures import bunny_stereo_synthetic  # noqa: F401
 
@@ -24,7 +24,7 @@ def test_clipper_block(bunny_stereo_synthetic):
     data_association_config = config.data_association_config
     data_association_config.invariant_epsilon = 0.002
     data_association_config.invariant_sigma = 0.001
-    clipper_block = ClipperBlock(data_association_config)
+    clipper_block = DataAssociationBlock(data_association_config)
     inliers, soln = clipper_block.run_clipper(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
@@ -48,7 +48,7 @@ def test_inliers_to_soln(bunny_stereo_synthetic):
     data_association_config = config.data_association_config
     data_association_config.invariant_epsilon = 0.02
     data_association_config.invariant_sigma = 0.01
-    clipper_block = ClipperBlock(data_association_config)
+    clipper_block = DataAssociationBlock(data_association_config)
     inliers, soln = clipper_block.run_clipper(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
@@ -72,7 +72,7 @@ def test_clipper_block_threshold(bunny_stereo_synthetic):
     data_association_config.invariant_sigma = 0.01
     data_association_config.unweighted = True  # Enable thresholding
 
-    clipper_block = ClipperBlock(data_association_config)
+    clipper_block = DataAssociationBlock(data_association_config)
     inliers, x = clipper_block.run_clipper(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
@@ -97,7 +97,7 @@ def test_clipper_sdp(bunny_stereo_synthetic):
     data_association_config = config.data_association_config
     data_association_config.invariant_epsilon = 0.002
     data_association_config.invariant_sigma = 0.001
-    clipper_block = ClipperBlock(data_association_config)
+    clipper_block = DataAssociationBlock(data_association_config)
     # Run the CLIPPER SDP block to get inliers and the solution u
     inliers, u = clipper_block.run_sdp(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)

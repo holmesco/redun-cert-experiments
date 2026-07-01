@@ -16,7 +16,6 @@ from utils.stereo_camera_model import StereoCameraModel, StereoCameraConfig
 from stereo_loc.DataAssociationBlocks import (
     DataAssociationBlock,
     DataAssociationMethod,
-    ClipperBlock,
     DataAssociationConfig,
 )
 from utils.keypoint_tools import get_inv_cov_weights
@@ -126,7 +125,9 @@ class StereoPipeline:
             DataAssociationMethod.CLIPPER,
             DataAssociationMethod.CLIPPER_SDP,
         ]:
-            self.data_association = ClipperBlock(self.config.data_association_config)
+            self.data_association = DataAssociationBlock(
+                self.config.data_association_config
+            )
         elif self.config.data_association_config.method == DataAssociationMethod.RANSAC:
             raise NotImplementedError("RANSAC data association not implemented yet.")
         else:

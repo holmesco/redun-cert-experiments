@@ -3,3 +3,4 @@ dataset_path: "data/Euroc/MH_01_easy"
 index_bounds: [1000,1005]
 override_path: "configs/stereo_pipeline/test_override.yaml"
 frame_interval: 20
+save_results: False

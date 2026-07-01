@@ -47,7 +47,8 @@ class StereoPipelineExperimentConfig:
     index_bounds: Tuple[int, int] | None = None
     # Method for initializing the pose for the registration algorithm
     pose_init: PoseInitializationMethod = PoseInitializationMethod.IDENTITY
-
+    # Whether to save the results of the experiment
+    save_results: bool = True
 
 def load_experiment_config(config_path: Path) -> StereoPipelineExperimentConfig:
     # Start with defaults from dataclass
@@ -164,13 +165,13 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
 
     # Convert data to dataframe
     df = pd.DataFrame(output_data)
-    timestamp = datetime.now().strftime("%Y%m%dT%H%M")
-    run_dir = ROOT / "results" / "stereo_loc" / cfg.experiment_name / timestamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    df.to_csv(run_dir / "results.csv", index=False)
-    OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
-    OmegaConf.save(OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml")
+    if cfg.save_results:
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M")
+        run_dir = ROOT / "results" / "stereo_loc" / cfg.experiment_name / timestamp
+        run_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(run_dir / "results.csv", index=False)
+        OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
+        OmegaConf.save(OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml")
 
 
 if __name__ == "__main__":

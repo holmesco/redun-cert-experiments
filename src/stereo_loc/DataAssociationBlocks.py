@@ -22,15 +22,21 @@ class DataAssociationConfig:
 
     # Method for data association. Options: "clipper", "ransac"
     method: DataAssociationMethod = DataAssociationMethod.CLIPPER
-    # invariant parameters for defining graph
+    # Device
+    default_device: str = "cpu"
+    
+    # --- Graph Definition Parameters ---   
     invariant_epsilon: float = 0.3  # 30 cm, correspoding to max allowable discrepancy
     invariant_sigma: float = (
         0.15  # 15 cm, half the max allowable discrepancy, to get a good scoring function
     )
-    # CLIPPER rounding strategy
-    clipper_rounding_method = clipperpy.Rounding.DSD_HEU
     # Threshold for converting to unweighted graph. (zero if not converting)
     unweighted: bool = False
+    
+    # CLIPPER rounding strategy
+    clipper_rounding_method = clipperpy.Rounding.DSD_HEU
+    
+    # --- Certification Parameters ---
     # Certification flag for data association
     certify: bool = False
     # Parameters for the analytic centering certifier
@@ -39,29 +45,38 @@ class DataAssociationConfig:
     )
     # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
     rank_ratio: float = 1e-6
+    
+    # --- Clique to Solution Conversion Parameters ---
     # inlier to solution conversion iterations
     clique_to_solution_iters: int = 100
     # inlier to solution tolerance
     clique_to_solution_tol: float = 1e-9
-
-
+    
+    # --- RANSAC parameters ---
+    # number of points to use for RANSAC pose estimation
+    ransac_num_sample_pts: int = 3
+    # number of RANSAC iterations
+    ransac_num_iterations: int = 50
+    
 class DataAssociationBlock:
-    """Data association block that takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
+    """Data association block that takes in two sets of 3D keypoints and outputs a set of matched keypoints.
+
+    Uses CLIPPER for 3D data association: takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
 
     def __init__(self, config: DataAssociationConfig):
         self.config = config
         # Affinity matrix
         self.M: np.ndarray | None = None
-
-    def get_affinity(self) -> np.ndarray:
-        """Get the affinity matrix from the data association block.
-        Warning: This should only be called after the forward pass, and will return the affinity matrix for the last pair of keypoints that were passed through the forward pass.
-        Returns:
-            M (np.ndarray): Affinity matrix, of shape (N, N).
-        """
-        raise NotImplementedError(
-            "Get affinity not implemented for base DataAssociationBlock class."
-        )
+        # Set up invariant
+        iparams = clipperpy.invariants.EuclideanDistanceParams()
+        iparams.sigma = self.config.invariant_sigma
+        iparams.epsilon = self.config.invariant_epsilon
+        invariant = clipperpy.invariants.EuclideanDistance(iparams)
+        # Define rounding strategy
+        params = clipperpy.Params()
+        params.rounding = self.config.clipper_rounding_method
+        # define clipper object
+        self.clipper = clipperpy.CLIPPER(invariant, params)
 
     def certify_solution(
         self,
@@ -109,23 +124,6 @@ class DataAssociationBlock:
         # Certify the solution
         result = certifier.certify(x)
         return result
-
-
-class ClipperBlock(DataAssociationBlock):
-    """CLIPPER block for 3D data association. Takes in two sets of 3D keypoints and outputs a set of matched keypoints."""
-
-    def __init__(self, config: DataAssociationConfig):
-        super().__init__(config)
-        # Set up invariant
-        iparams = clipperpy.invariants.EuclideanDistanceParams()
-        iparams.sigma = self.config.invariant_sigma
-        iparams.epsilon = self.config.invariant_epsilon
-        invariant = clipperpy.invariants.EuclideanDistance(iparams)
-        # Define rounding strategy
-        params = clipperpy.Params()
-        params.rounding = self.config.clipper_rounding_method
-        # define clipper object
-        self.clipper = clipperpy.CLIPPER(invariant, params)
 
     def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):
         """Set up the affinity matrix for the CLIPPER block. This is a separate function to allow for reusing the affinity matrix for certification.
@@ -268,9 +266,27 @@ class ClipperBlock(DataAssociationBlock):
             )
         return self.M
 
+    def run_ransac(
+        self,
+        kpt_3D_src: torch.Tensor | None = None,
+        kpt_3D_trg: torch.Tensor | None = None,
+    ):
+        """Forward pass through the RANSAC block. Keypoints with same index are assumed to be putative correspondences. The RANSAC block will output a mask of inliers for the matched keypoints.
+        Args:
+            kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
+            kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
+        Returns:
+            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
+        """
+        raise NotImplementedError(
+            "RANSAC not implemented for base DataAssociationBlock class."
+        )
+
 
 def get_maxclique_sdp_constraints(M: np.ndarray):
-    """Optimized version using vectorized index extraction and fast COO construction."""
+    """Optimized version using vectorized index extraction and fast COO construction.
+    NOTE: This function is only used for running the SDP relaxation but it is quite slow.
+    TODO: Implement in MOSEK call in C++"""
     n = M.shape[0]
 
     # 1. Get upper triangle indices where M == 0 efficiently
