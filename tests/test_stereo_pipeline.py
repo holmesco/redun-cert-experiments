@@ -379,7 +379,7 @@ def test_stereo_pipeline(euroc_data):
         # Get stereo camera config from dataset
         config.stereo_camera_config = euroc_preproc.get_stereo_cam_config()
         # Use SDP to get associations so that we can test out the certifier
-        config.data_association_config.method = DataAssociationMethod.CLIPPER_SDP
+        config.data_association_config.method = DataAssociationMethod.SDP
         # Set up the stereo pipeline
         pipeline = StereoPipeline(config)
         # Initialize with ground truth transform

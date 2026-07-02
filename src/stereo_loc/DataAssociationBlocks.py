@@ -14,7 +14,8 @@ from cert_tools.sdp_solvers import solve_sdp_fusion
 class DataAssociationMethod(Enum):
     CLIPPER = "CLIPPER"
     RANSAC = "RANSAC"
-    CLIPPER_SDP = "CLIPPER_SDP"
+    SDP = "SDP"
+    PMC = "PMC"
 
 
 @dataclass
@@ -109,7 +110,7 @@ class DataAssociationBlock:
 
     def certify_solution(
         self,
-        x: np.ndarray,
+        x: np.ndarray | torch.Tensor,
         cost: float = None,
         check_constraints: bool = False,
     ) -> Tuple[AnalyticCenterResult, float]:
@@ -129,6 +130,9 @@ class DataAssociationBlock:
         result : AnalyticCenterResult
             Result of the certification process.
         """
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+        
         # Retrieve the affinity matrix from the last forward pass
         M = self.get_affinity()
         # Check constraints
@@ -199,6 +203,42 @@ class DataAssociationBlock:
         inliers = torch.from_numpy(soln.u > thresh).bool()  # (N,)
         return inliers, soln.u
 
+    def run_pmc(
+        self,
+        kpt_3D_src: torch.Tensor | None = None,
+        kpt_3D_trg: torch.Tensor | None = None,
+    ):
+        """
+        Run the PMC (Parallel Max Clique) algorithm via CLIPPER to find the maximum clique in the graph defined by the affinity matrix M. Keypoints with same index are assumed to be putative correspondences. The PMC block will output a mask of inliers for the matched keypoints.
+        Args:
+            kpt_3D_src (torch.Tensor): Source 3D keypoints, of shape (4, N).
+            kpt_3D_trg (torch.Tensor): Target 3D keypoints, of shape (4, N).
+        Returns:
+            inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
+        """
+        # Set up affinity matrix for max clique problem.
+        if kpt_3D_src is not None and kpt_3D_trg is not None:
+            self.set_up_affinity_matrix(kpt_3D_src, kpt_3D_trg)
+        elif self.M is None:
+            raise ValueError(
+                "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
+            )
+        # Run PMC via Clipper
+        self.clipper.solve_as_maximum_clique()
+        # retrieve inliers
+        soln = self.clipper.get_solution()
+        nodes = soln.nodes
+        inliers = torch.zeros(self.M.shape[0], dtype=torch.bool)
+        inliers[nodes] = True
+        # When using PMC, only the nodes are provided, so we need to convert them to a full solution vector for certification.
+        u , cost = self.inliers_to_solution(inliers)
+        if u is None:
+            raise ValueError(
+                "Inliers do not form a clique. Cannot convert to solution vector."
+            )
+
+        return inliers, u, cost
+
     def run_sdp(self, kpt_3D_src, kpt_3D_trg):
         """Run the SDP relaxation of the max clique problem defined by the affinity matrix M. This is a separate function to allow for reusing the affinity matrix for certification."""
         # Set up affinity matrix for max clique problem.
@@ -233,17 +273,19 @@ class DataAssociationBlock:
         # Convert to inlier mask
         inliers = None
         if rank == 1:
-            thresh = np.max(U) / 2
-            inliers = torch.from_numpy(U[:, 0] > thresh).bool()  # (N,)
+            # Absolute value required here because the solution is invariant to sign flips
+            U_abs = np.abs(U[:, 0]) 
+            thresh = np.max(U_abs) / 2
+            inliers = torch.from_numpy(U_abs > thresh).bool()  # (N,)
         return inliers, U
 
-    def inliers_to_solution(self, inliers: torch.Tensor):
+    def inliers_to_solution(self, inliers: torch.Tensor) -> Tuple[torch.Tensor, float]:
         """Convert inlier mask to solution vector for the max clique problem defined by M.
         This is done by identfying the max eigenvector of the submatrix of M corresponding to the inliers, and embedding it into the full solution vector.
         Args:
             inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
         Returns:
-            soln (torch.Tensor): Solution vector for the max clique problem, of shape (N,).
+            soln (torch.Tensor): Solution vector for the max clique problem, of shape (N,)
             cost (float): Cost of the solution, defined as -x^T M x.
         """
         if self.M is None:
@@ -258,8 +300,10 @@ class DataAssociationBlock:
 
         if not torch.all(M_sub > 0):
             if self.config.verbose:
-                print("Cost submatrix contains non-positive elements. Inliers do not form a clique.")
-            return None, float("inf")        
+                print(
+                    "Cost submatrix contains non-positive elements. Inliers do not form a clique."
+                )
+            return None, float("inf")
 
         # Power iteration to get Perron vector
         v = torch.ones(len(inlier_idx), dtype=M.dtype, device=device)

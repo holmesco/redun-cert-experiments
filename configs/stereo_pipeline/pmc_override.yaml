@@ -1,0 +1,9 @@
+feature_extractor_config:
+  max_num_keypoints: 250
+data_association_config:
+  method: PMC
+  certify: True
+  unweighted: False
+  invariant_epsilon: 3.0e-1
+  invariant_sigma: 1.5e-1
+  

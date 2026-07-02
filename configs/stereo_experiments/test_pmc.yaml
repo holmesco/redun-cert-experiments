@@ -1,0 +1,6 @@
+experiment_name: "test_pmc"
+dataset_path: "data/Euroc/MH_01_easy"
+index_bounds: [1000,1010]
+override_path: "configs/stereo_pipeline/pmc_override.yaml"
+frame_interval: 1
+save_results: False

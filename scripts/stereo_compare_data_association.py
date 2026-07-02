@@ -34,7 +34,7 @@ def get_euroc_data():
     # Expected default dataset location inside the experiments tree
     default_root = ROOT / "data" / "Euroc" / "MH_01_easy"
     if not default_root.exists():
-        raise(f"Euroc dataset not found at {default_root}")
+        raise (f"Euroc dataset not found at {default_root}")
 
     ds = EurocPreprocess(default_root)
     return ds
@@ -57,6 +57,7 @@ def image_to_tensor(img: np.ndarray) -> torch.Tensor:
     img_t = img_t.unsqueeze(0)  # (1,H,W)
     img_t = img_t / 255.0
     return img_t
+
 
 def _run_pipeline_for_method(index0, index1, method: DataAssociationMethod):
     print(f"Collecting image data and generating disparities for {method.value}...")
@@ -197,7 +198,7 @@ def compare_with_sdp(index0=1000, index1=1030, plot=False):
             index0, index1, DataAssociationMethod.CLIPPER
         )
         clipper_sdp = _run_pipeline_for_method(
-            index0, index1, DataAssociationMethod.CLIPPER_SDP
+            index0, index1, DataAssociationMethod.SDP
         )
 
         print_method_info(clipper)
@@ -213,7 +214,7 @@ def compare_with_sdp(index0=1000, index1=1030, plot=False):
             inliers_sdp = clipper_sdp["inliers"]
             if len(inliers_clip) != len(inliers_sdp):
                 raise ValueError(
-                    "CLIPPER and CLIPPER_SDP produced different numbers of matched keypoints; cannot compare inlier masks directly."
+                    "CLIPPER and SDP produced different numbers of matched keypoints; cannot compare inlier masks directly."
                 )
 
             common_inliers = inliers_clip & inliers_sdp

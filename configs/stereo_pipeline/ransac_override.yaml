@@ -2,7 +2,7 @@ feature_extractor_config:
   max_num_keypoints: 250
 data_association_config:
   method: RANSAC
-  # method: CLIPPER_SDP
+  # method: SDP
   certify: True
   unweighted: False
   invariant_epsilon: 3.0e-1

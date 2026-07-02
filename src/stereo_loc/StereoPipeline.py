@@ -80,9 +80,9 @@ class StereoPipelineDebugInfo:
     # Certification results
     cert_result_association: AnalyticCenterResult | None = None
     cert_result_registration: AnalyticCenterResult | None = None
-    # Data association solution (for CLIPPER_SDP), of shape (N, N).
+    # Data association solution (for SDP), of shape (N, N).
     da_soln: np.ndarray | None = None
-    # Clipper matrix M (for CLIPPER_SDP), of shape (N, N).
+    # Clipper matrix M (for SDP), of shape (N, N).
     M: np.ndarray | None = None
 
 
@@ -120,10 +120,10 @@ class StereoPipeline:
         self.stereo_camera_model = StereoCameraModel(self.config.stereo_camera_config)
 
         # Set up data association
-        self.data_association =DataAssociationBlock(
-                self.config.data_association_config
-            )
-        
+        self.data_association = DataAssociationBlock(
+            self.config.data_association_config
+        )
+
     def forward(
         self, images: torch.Tensor, disparities: torch.Tensor, T_init: np.ndarray
     ) -> StereoPipelineOutput:
@@ -170,14 +170,17 @@ class StereoPipeline:
         if self.config.data_association_config.method == DataAssociationMethod.CLIPPER:
             inliers, soln = self.data_association.run_clipper(kpt_3D_src, kpt_3D_trg)
         elif self.config.data_association_config.method == DataAssociationMethod.RANSAC:
-            inliers, soln, cost = self.data_association.run_ransac(kpt_3D_src, kpt_3D_trg)
+            inliers, soln, cost = self.data_association.run_ransac(
+                kpt_3D_src, kpt_3D_trg
+            )
             if self.config.verbose:
                 print(f"RANSAC cost: {cost}")
-        elif (
-            self.config.data_association_config.method
-            == DataAssociationMethod.CLIPPER_SDP
-        ):
+        elif self.config.data_association_config.method == DataAssociationMethod.SDP:
             inliers, soln = self.data_association.run_sdp(kpt_3D_src, kpt_3D_trg)
+        elif self.config.data_association_config.method == DataAssociationMethod.PMC:
+            inliers, soln, cost = self.data_association.run_pmc(kpt_3D_src, kpt_3D_trg)
+            if self.config.verbose:
+                print(f"PMC cost: {cost}")
         else:
             raise ValueError(
                 f"Invalid data association method: {self.config.data_association_config.method}"
@@ -188,7 +191,7 @@ class StereoPipeline:
         # Call 3D data association certifier module
         data_association_certified = False
         cert_result_da = None
-        if self.config.data_association_config.certify:            
+        if self.config.data_association_config.certify:
             cert_result_da, cost_da = self.data_association.certify_solution(soln)
             data_association_certified = cert_result_da.certified
         if self.config.verbose:
