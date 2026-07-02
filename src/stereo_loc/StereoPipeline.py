@@ -120,21 +120,10 @@ class StereoPipeline:
         self.stereo_camera_model = StereoCameraModel(self.config.stereo_camera_config)
 
         # Set up data association
-        self.data_association: DataAssociationBlock
-        if self.config.data_association_config.method in [
-            DataAssociationMethod.CLIPPER,
-            DataAssociationMethod.CLIPPER_SDP,
-        ]:
-            self.data_association = DataAssociationBlock(
+        self.data_association =DataAssociationBlock(
                 self.config.data_association_config
             )
-        elif self.config.data_association_config.method == DataAssociationMethod.RANSAC:
-            raise NotImplementedError("RANSAC data association not implemented yet.")
-        else:
-            raise ValueError(
-                f"Invalid data association method: {self.config.data_association_config.method}"
-            )
-
+        
     def forward(
         self, images: torch.Tensor, disparities: torch.Tensor, T_init: np.ndarray
     ) -> StereoPipelineOutput:
@@ -181,7 +170,9 @@ class StereoPipeline:
         if self.config.data_association_config.method == DataAssociationMethod.CLIPPER:
             inliers, soln = self.data_association.run_clipper(kpt_3D_src, kpt_3D_trg)
         elif self.config.data_association_config.method == DataAssociationMethod.RANSAC:
-            raise NotImplementedError("RANSAC data association not implemented yet.")
+            inliers, soln, cost = self.data_association.run_ransac(kpt_3D_src, kpt_3D_trg)
+            if self.config.verbose:
+                print(f"RANSAC cost: {cost}")
         elif (
             self.config.data_association_config.method
             == DataAssociationMethod.CLIPPER_SDP
@@ -197,13 +188,8 @@ class StereoPipeline:
         # Call 3D data association certifier module
         data_association_certified = False
         cert_result_da = None
-        if self.config.data_association_config.certify:
-            # if thresholding (converting to max clique problem), pass the inliers.
-            if self.config.data_association_config.unweighted:
-                cert_kwargs = dict(inliers=inliers)
-            else:
-                cert_kwargs = dict(soln=soln)
-            cert_result_da = self.data_association.certify_solution(**cert_kwargs)
+        if self.config.data_association_config.certify:            
+            cert_result_da, cost_da = self.data_association.certify_solution(soln)
             data_association_certified = cert_result_da.certified
         if self.config.verbose:
             print(f"Data association certification result: {cert_result_da}")

@@ -49,6 +49,8 @@ class StereoPipelineExperimentConfig:
     pose_init: PoseInitializationMethod = PoseInitializationMethod.IDENTITY
     # Whether to save the results of the experiment
     save_results: bool = True
+    # Seed for random number generation, useful for reproducibility
+    random_seed: int = 42
 
 def load_experiment_config(config_path: Path) -> StereoPipelineExperimentConfig:
     # Start with defaults from dataclass
@@ -88,6 +90,11 @@ def get_pose_initialization(
 
 
 def run_experiment(cfg: StereoPipelineExperimentConfig):
+    # Set all seeds for reproducibility
+    np.random.seed(cfg.random_seed)
+    torch.manual_seed(cfg.random_seed)
+    torch.cuda.manual_seed_all(cfg.random_seed)
+
     # Load Dataset
     euroc_preprocess = EurocPreprocess(ROOT / cfg.dataset_path)
     euroc_dataset = EurocDataset(euroc_preprocess, frame_interval=cfg.frame_interval)
@@ -172,7 +179,9 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         df.to_csv(run_dir / "results.csv", index=False)
         OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
         OmegaConf.save(OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml")
-
+    else:
+        print("Experiment results:")
+        print(df)
 
 if __name__ == "__main__":
     import argparse

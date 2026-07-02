@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Tuple
 import numpy as np
 import torch
 from scipy.sparse import csc_array, coo_array, eye_array
@@ -24,6 +25,8 @@ class DataAssociationConfig:
     method: DataAssociationMethod = DataAssociationMethod.CLIPPER
     # Device
     default_device: str = "cpu"
+    # Verbosity flag for debugging
+    verbose: bool = False
 
     # --- Graph Definition Parameters ---
     invariant_epsilon: float = 0.3  # 30 cm, correspoding to max allowable discrepancy
@@ -109,7 +112,7 @@ class DataAssociationBlock:
         x: np.ndarray,
         cost: float = None,
         check_constraints: bool = False,
-    ) -> AnalyticCenterResult:
+    ) -> Tuple[AnalyticCenterResult, float]:
         """Certify the solution x for the max clique problem defined by M.
 
         Parameters
@@ -142,7 +145,7 @@ class DataAssociationBlock:
         certifier = MaxCliqueCertifier(-M, cost, ac_params)
         # Certify the solution
         result = certifier.certify(x)
-        return result
+        return result, cost
 
     def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):
         """Set up the affinity matrix for the CLIPPER block. This is a separate function to allow for reusing the affinity matrix for certification.
@@ -253,9 +256,10 @@ class DataAssociationBlock:
         inlier_idx = torch.nonzero(inliers.to(device).bool(), as_tuple=True)[0]
         M_sub = M[inlier_idx][:, inlier_idx]
 
-        assert torch.all(
-            M_sub > 0
-        ), "Cost submatrix contains non-positive elements. Inliers do not form a clique."
+        if not torch.all(M_sub > 0):
+            if self.config.verbose:
+                print("Cost submatrix contains non-positive elements. Inliers do not form a clique.")
+            return None, float("inf")        
 
         # Power iteration to get Perron vector
         v = torch.ones(len(inlier_idx), dtype=M.dtype, device=device)
@@ -337,6 +341,7 @@ class DataAssociationBlock:
                     best_cost = cost
                     best_inliers = inliers
                     best_soln = soln
+        best_soln = best_soln.cpu().numpy() if best_soln is not None else None
         return best_inliers, best_soln, best_cost
 
 
