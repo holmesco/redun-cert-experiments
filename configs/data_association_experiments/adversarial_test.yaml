@@ -1,25 +1,31 @@
-experiment_name: "clipper_benchmark_test"
-experiment_type: CLIPPER_BENCHMARK
+experiment_name: "adversarial_test"
+experiment_type: ADVERSARIAL
 ply_path: "data/bun10k.ply"
-seed: 0
+seed: 2
 # Bounded normal noise parameters
-# noise_sigma: 0.01
-# noise_beta: 0.0554
-noise_sigma: 0.0
-noise_beta: 0.0
+noise_beta: 0.0554
+noise_sigma: 0.01
 # Sweep parameters
 num_assocs: [200]
-outlier_ratios: [0.2]
-num_trials: 1
+outlier_ratios: [0.45]
+num_trials: 20
 # turn off results storage
 save_results: False
-translation: [2.0, 0.0, 0.0]
-rotation: [0.0, 0.0, 1.570796]
+# bad init
+poor_initialization: False
+# Ground truth transform
+translation: [1.0, 0.1, 0.0]
+rotation: [0.0,0.0,0.0]
+# Adversarial Transform
+translation_adv: [1.0, -0.1, 0.0]
+rotation_adv: [0.0,0.0,0.0]
+# Turn on plotting.
 plot: True
 # Data association config
 data_association_config:
-  invariant_epsilon: 0.02
-  invariant_sigma: 0.01
+  method: CLIPPER
+  invariant_epsilon: 0.05
+  invariant_sigma: 0.015
   certify: True
   ac_params:
     verbose: True
@@ -31,7 +37,7 @@ data_association_config:
     max_iter: 10
     # Early stopping local
     early_stop_angle: True
-    max_angle: 1e-5
+    max_angle: 1e-4
     # Perturbation parameters
     perturb_cost: True
     eps_cost: 1e-7

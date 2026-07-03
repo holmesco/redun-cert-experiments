@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import time
 
 import numpy as np
@@ -63,7 +63,8 @@ class BunnyExperimentConfig:
     seed: int = 0
     # Save results
     save_results: bool = True
-
+    # Plot the final problem instance (point clouds + associations) at the end.
+    plot: bool = False
     # --- Data association config (CLIPPER invariant parameters, etc.) ---
     data_association_config: DataAssociationConfig = field(
         default_factory=lambda: DataAssociationConfig(
@@ -73,9 +74,26 @@ class BunnyExperimentConfig:
         )
     )
 
+    # --- Poor initialization for CLIPPER ---
+    # If True, initialize CLIPPER with a poor initial solution (all outliers).
+    poor_initialization: bool = False
+    
     # --- Synthetic noise parameters (bounded normal noise) ---
     noise_sigma: float = 0.01
     noise_beta: float = 5.54 * 0.01
+
+    # --- Synthetic transformation parameters (random rotation + translation) ---
+    # Ground truth transformation applied to the bunny to generate the target point cloud.
+    # If None, random translation in [-1.0, 1.0]^3
+    translation: List[float] | None = None
+    # If None, random rotation
+    rotation: List[float] | None = None
+    # Adversarial transformation applied to the bunny to generate the target point cloud.
+    # If None, random translation in [-1.0, 1.0]^3
+    translation_adv: List[float] | None = None
+    # If None, random rotation
+    rotation_adv: List[float] | None = None
+    
 
     # ---  sweep parameters ---
     # Numbers of putative associations to sweep over.
@@ -109,6 +127,7 @@ def read_ply(ply_path: Path) -> np.ndarray:
     pts = np.asarray(pcd.points)
     if pts.shape[0] == 0:
         raise ValueError(f"No points found in {ply_path}")
+
     return pts
 
 
@@ -247,10 +266,6 @@ def get_precision_recall(A: np.ndarray, Agt: np.ndarray) -> Tuple[float, float]:
 # ----------------------------------------------------------------------------
 
 
-def _make_clipper_block(cfg: BunnyExperimentConfig) -> DataAssociationBlock:
-    return DataAssociationBlock(cfg.data_association_config)
-
-
 def _associations_to_keypoints(
     pcd0: np.ndarray, pcd1: np.ndarray, A: np.ndarray
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -270,52 +285,257 @@ def _associations_to_keypoints(
     return to_homog(src), to_homog(trg)
 
 
-def run_clipper_benchmark(cfg: BunnyExperimentConfig) -> pd.DataFrame:
-    """Python port of the CLIPPER C++ benchmark using the DataAssociationBlocks."""
+def run_data_association(
+    block: DataAssociationBlock,
+    method: DataAssociationMethod,
+    x_init: Optional[np.ndarray] = None
+) -> Tuple[torch.Tensor, np.ndarray | torch.Tensor]:
+    """Dispatch to the configured data association solver.
+
+    The affinity matrix is assumed to already have been set up (via
+    :meth:`DataAssociationBlock.set_up_affinity_matrix`) so that its construction
+    can be timed separately. CLIPPER, PMC and SDP reuse that cached matrix; RANSAC
+    needs the raw keypoints to estimate poses and rebuilds the affinity internally.
+
+    Returns ``(inliers, soln)`` where ``soln`` is the solution vector used for
+    certification.
+    """
+    if method == DataAssociationMethod.CLIPPER:
+        inliers, soln = block.run_clipper(x_init=x_init)
+    elif method == DataAssociationMethod.PMC:
+        inliers, soln, _ = block.run_pmc()
+    elif method == DataAssociationMethod.SDP:
+        inliers, soln = block.run_sdp()
+    elif method == DataAssociationMethod.RANSAC:
+        inliers, soln, _ = block.run_ransac()
+    else:
+        raise ValueError(f"Invalid data association method: {method}")
+    return inliers, soln
+
+
+def get_transformation(
+    rotation: Optional[np.ndarray],
+    translation: Optional[np.ndarray],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Build a random homogeneous transform ``T_10``.
+
+    Uses ``rotation`` (a rotation vector) and ``translation`` when provided,
+    otherwise samples a random rotation and a translation in ``[-1, 1]^3``.
+    """
+    if rotation is not None:
+        R_10 = Rotation.from_rotvec(np.array(rotation)).as_matrix()
+    else:
+        R_10 = Rotation.random().as_matrix()
+    if translation is not None:
+        t_01_1 = np.array(translation)
+    else:
+        t_01_1 = rng.uniform(-1.0, 1.0, size=3)
+    T_10 = np.eye(4)
+    T_10[:3, :3] = R_10
+    T_10[:3, 3] = t_01_1
+    return torch.from_numpy(T_10).float()
+
+
+def clipper_benchmark_setup(
+    cfg: BunnyExperimentConfig,
+    pcd0: np.ndarray,
+    m: int,
+    rho: float,
+    rng: np.random.Generator,
+) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]:
+    """Generate a single CLIPPER-benchmark problem instance.
+
+    Builds a noisy, randomly transformed copy of the bunny together with ``m``
+    putative correspondences at outlier ratio ``rho`` (a Python port of the
+    CLIPPER C++ benchmark).
+
+    Returns ``(src_t, trg_t, A, Agt)`` where ``src_t``/``trg_t`` are the
+    homogeneous keypoint tensors fed to the solver, ``A`` is the (m, 2) putative
+    association set and ``Agt`` is the ground-truth inlier subset.
+    """
+    # generate random (R,t)
+    T_10 = get_transformation(cfg.rotation, cfg.translation, rng)
+
+    # Noisy copy of the bunny and its ground-truth associations.
+    pcd1 = make_noisy(pcd0, cfg.noise_sigma, cfg.noise_beta, rng)
+    Agt0 = distance_based_correspondences(
+        pcd0, pcd1, knn=1, radius=cfg.noise_beta, enforce_1to1=True
+    )
+    # Synthetic putative correspondences with outlier ratio rho.
+    A, Agt = generate_synthetic_correspondences(pcd0, pcd1, Agt0, m, rho, rng)
+    # map into keypoints
+    src, trg_aligned = _associations_to_keypoints(pcd0, pcd1, A)
+    # Apply transformation to the target keypoints
+    trg = T_10 @ trg_aligned
+    return src, trg, A, Agt, T_10
+
+
+def adversarial_setup(
+    cfg: BunnyExperimentConfig,
+    pcd0: np.ndarray,
+    m: int,
+    rho: float,
+    rng: np.random.Generator,
+) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray, np.ndarray]:
+    """Generate a single CLIPPER-benchmark problem instance.
+
+    Builds a noisy, randomly transformed copy of the bunny together with ``m``
+    putative correspondences at outlier ratio ``rho`` (a Python port of the
+    CLIPPER C++ benchmark).
+
+    Returns ``(src_t, trg_t, A, Agt)`` where ``src_t``/``trg_t`` are the
+    homogeneous keypoint tensors fed to the solver, ``A`` is the (m, 2) putative
+    association set and ``Agt`` is the ground-truth inlier subset.
+    """
+    # Generate true transformation (R,t) for the bunny.
+    T_10 = get_transformation(cfg.rotation, cfg.translation, rng)
+    # Generate adversarial transformation (R,t) for the bunny.
+    T_10_adv = get_transformation(cfg.rotation_adv, cfg.translation_adv, rng)
+
+    # Noisy copy of the bunny and its ground-truth associations.
+    pcd1 = make_noisy(pcd0, cfg.noise_sigma, cfg.noise_beta, rng)
+    Agt0 = distance_based_correspondences(
+        pcd0, pcd1, knn=1, radius=cfg.noise_beta, enforce_1to1=True
+    )
+    # Number of correspondences to draw from the good set, and adversarial set.
+    ni = int(round(m * (1.0 - rho)))  # number of inliers in final set
+    no = m - ni  # number of outliers in final set
+    
+    # Synthetic putative correspondences with outlier ratio rho.
+    Ai, Agt = generate_synthetic_correspondences(pcd0, pcd1, Agt0, ni, 0.0, rng)
+    Ao, _ = generate_synthetic_correspondences(pcd0, pcd1, Agt0, no, 0.0, rng)
+    A = np.vstack((Ao, Ai))
+    # map into keypoints
+    src, trg_aligned = _associations_to_keypoints(pcd0, pcd1, A)
+    # Apply transformations
+    trg1 = T_10_adv @ trg_aligned[:, :Ao.shape[0]]  # Apply adversarial transformation to outliers
+    trg2 = T_10 @ trg_aligned[:, Ao.shape[0]:]  # Apply true transformation to inliers
+    trg = torch.cat((trg1, trg2), dim=1)
+    
+    return src, trg, A, Agt, T_10
+
+
+def plot_associations(
+    src_t: torch.Tensor,
+    trg_t: torch.Tensor,
+    inliers: torch.Tensor,
+    num_outliers: int = 0,
+) -> None:
+    """Plot the source/target point clouds and their putative associations.
+
+    Source keypoints are drawn in red, target keypoints in blue. Each association
+    is drawn as a line connecting the corresponding source and target point:
+    green for the inliers selected by the data association solver and red for the
+    remaining (outlier) associations. Association lines are drawn with an alpha of
+    0.5.
+    """
+    import matplotlib.pyplot as plt
+
+    # (m, 3) source/target points for each association (drop homogeneous row).
+    src = src_t[:3, :].cpu().numpy().T
+    trg = trg_t[:3, :].cpu().numpy().T
+
+    # Inlier mask as selected by the data association solver.
+    is_inlier = inliers.cpu().numpy().astype(bool)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Point clouds: source (red) and target (blue).
+    ax.scatter(src[:, 0], src[:, 1], src[:, 2], c="magenta", s=5, label="source")
+    if num_outliers > 0:
+        ax.scatter(trg[:num_outliers, 0], trg[:num_outliers, 1], trg[:num_outliers, 2], c="red", s=5, label="target (outliers)")
+        ax.scatter(trg[num_outliers:, 0], trg[num_outliers:, 1], trg[num_outliers:, 2], c="blue", s=5, label="target (inliers)")
+    # Association lines: green for inliers, red for outliers, alpha 0.5.
+    for i in range(src.shape[0]):
+        color = "green" if is_inlier[i] else "red"
+        ax.plot(
+            [src[i, 0], trg[i, 0]],
+            [src[i, 1], trg[i, 1]],
+            [src[i, 2], trg[i, 2]],
+            color=color,
+            alpha=0.5,
+            linewidth=0.5,
+        )
+
+    ax.legend()
+    # ax.set_xlabel("X")
+    # ax.set_ylabel("Y")
+    # ax.set_zlabel("Z")
+    ax.set_aspect("equal")
+    ax.grid(False)
+    # No Background
+    ax.set_facecolor("none")
+    fig.patch.set_alpha(0.0)
+    ax.axis("off")
+    # Set camera to look down the negative Z axis, with Y up
+    ax.view_init(elev=90, azim=-90)
+
+    plt.show()
+
+
+def run_experiment(cfg: BunnyExperimentConfig):
+    # Seed everything for reproducibility.
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
 
     pcd0 = read_ply(ROOT / cfg.ply_path)
     pcd0 = scale_to_cube(pcd0, cfg.scale_cube_size)
+    # center the points on zero
+    pcd0 -= pcd0.mean(axis=0)
 
-    clipper_block = _make_clipper_block(cfg)
-    
-    # generate random (R,t)
-    T_21 = np.eye(4)
-    T_21[0:3,0:3] = Rotation.random().as_matrix()
-    T_21[0:3,3] = np.random.uniform(low=-5, high=5, size=(3,))
+    data_association = DataAssociationBlock(cfg.data_association_config)
+
+    # Select the problem-generation function based on the experiment type. The
+    # two experiments only differ in how each problem instance is constructed.
+    if cfg.experiment_type == ExperimentType.CLIPPER_BENCHMARK:
+        setup_fn = clipper_benchmark_setup
+    elif cfg.experiment_type == ExperimentType.ADVERSARIAL:
+        setup_fn = adversarial_setup
+    else:
+        raise ValueError(f"Unknown experiment type: {cfg.experiment_type}")
 
     output_data = []
     total = len(cfg.outlier_ratios) * len(cfg.num_assocs) * cfg.num_trials
-    with tqdm(total=total, desc="CLIPPER benchmark") as pbar:
+    with tqdm(total=total, desc=cfg.experiment_type.value) as pbar:
         for rho in cfg.outlier_ratios:
             for m in cfg.num_assocs:
                 for trial in range(cfg.num_trials):
-                    # Noisy copy of the bunny and its ground-truth associations.
-                    pcd1 = make_noisy(pcd0, cfg.noise_sigma, cfg.noise_beta, rng)
-                    Agt0 = distance_based_correspondences(
-                        pcd0, pcd1, knn=1, radius=cfg.noise_beta, enforce_1to1=True
-                    )
-
-                    # Synthetic putative correspondences with outlier ratio rho.
-                    A, Agt = generate_synthetic_correspondences(
-                        pcd0, pcd1, Agt0, m, rho, rng
-                    )
-                    # Apply a random transformation to the points
-                    
-                    
-                    src_t, trg_t = _associations_to_keypoints(pcd0, pcd1, A)
+                    # Generate the problem instance for this experiment.
+                    src_t, trg_t, A, Agt, T_10 = setup_fn(cfg, pcd0, m, rho, rng)
 
                     # Time affinity-matrix construction.
                     t1 = time.perf_counter()
-                    clipper_block.set_up_affinity_matrix(src_t, trg_t)
+                    data_association.set_up_affinity_matrix(src_t, trg_t)
                     t2 = time.perf_counter()
                     t_affinity = t2 - t1
-
-                    # Time the dense clique solver.
+                    # Initialization for CLIPPER
+                    if cfg.poor_initialization:
+                        n_outlier = len(A) - len(Agt)
+                        x_init = np.zeros(src_t.shape[1], dtype=np.float64)
+                        x_init[:n_outlier] = 1.0
+                    else:
+                        x_init = None
+                    # Time the configured solver (CLIPPER, PMC, SDP or RANSAC).
+                    method = cfg.data_association_config.method
                     t1 = time.perf_counter()
-                    inliers, _ = clipper_block.run_clipper()
+                    inliers, soln = run_data_association(
+                        data_association, method, x_init=x_init
+                    )
                     t2 = time.perf_counter()
                     t_solver = t2 - t1
+
+                    # Optionally certify the data association solution and time it.
+                    data_association_certified = False
+                    t_certify = np.nan
+                    if cfg.data_association_config.certify:
+                        t1 = time.perf_counter()
+                        cert_result_da, _ = data_association.certify_solution(soln)
+                        t2 = time.perf_counter()
+                        t_certify = t2 - t1
+                        data_association_certified = cert_result_da.certified
 
                     # Precision / recall of the selected associations.
                     Ain = A[inliers.cpu().numpy()]
@@ -328,6 +548,8 @@ def run_clipper_benchmark(cfg: BunnyExperimentConfig) -> pd.DataFrame:
                             trial=trial,
                             t_affinity=t_affinity,
                             t_solver=t_solver,
+                            t_certify=t_certify,
+                            cert_da=data_association_certified,
                             precision=precision,
                             recall=recall,
                             num_inliers=int(inliers.sum().item()),
@@ -337,56 +559,26 @@ def run_clipper_benchmark(cfg: BunnyExperimentConfig) -> pd.DataFrame:
 
     df = pd.DataFrame(output_data)
 
-    # Print an aggregated summary table (mean +/- std) mirroring the C++ benchmark.
-    summary = (
-        df.groupby(["rho", "m"])
-        .agg(
-            t_affinity_ms_mean=("t_affinity", lambda s: s.mean() * 1e3),
-            t_affinity_ms_std=("t_affinity", lambda s: s.std() * 1e3),
-            t_solver_ms_mean=("t_solver", lambda s: s.mean() * 1e3),
-            t_solver_ms_std=("t_solver", lambda s: s.std() * 1e3),
-            precision=("precision", "mean"),
-            recall=("recall", "mean"),
-        )
-        .reset_index()
-    )
-    print("\n" + summary.to_string(index=False))
-
-    return df
-
-
-def run_adversarial(cfg: BunnyExperimentConfig) -> pd.DataFrame:
-    """Adversarial data association experiment.
-
-    Scaffolding only -- the adversarial setup will be described later. This
-    should construct point clouds / correspondences designed to be difficult for
-    the DataAssociationBlock (e.g. structured outliers, near-symmetries), run the
-    block, and record how the association and its certificate behave.
-    """
-    raise NotImplementedError(
-        "The adversarial experiment has not been implemented yet."
-    )
-
-
-def run_experiment(cfg: BunnyExperimentConfig):
-    # Seed everything for reproducibility.
-    np.random.seed(cfg.seed)
-    torch.manual_seed(cfg.seed)
-
-    if cfg.experiment_type == ExperimentType.CLIPPER_BENCHMARK:
-        df = run_clipper_benchmark(cfg)
-    elif cfg.experiment_type == ExperimentType.ADVERSARIAL:
-        df = run_adversarial(cfg)
-    else:
-        raise ValueError(f"Unknown experiment type: {cfg.experiment_type}")
-
     if cfg.save_results:
         timestamp = datetime.now().strftime("%Y%m%dT%H%M")
-        run_dir = ROOT / "results" / "data_association" / cfg.experiment_name / timestamp
+        run_dir = (
+            ROOT / "results" / "data_association" / cfg.experiment_name / timestamp
+        )
         run_dir.mkdir(parents=True, exist_ok=True)
         df.to_csv(run_dir / "results.csv", index=False)
         OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
         print(f"\nSaved results to {run_dir}")
+    else:
+        print("\nExperiment results:")
+        print(df)
+
+    # Plot the final problem instance (point clouds + associations).
+    if cfg.experiment_type == ExperimentType.ADVERSARIAL:
+        num_outliers = len(A) - len(Agt)
+    else:
+        num_outliers = 0
+    if cfg.plot:
+        plot_associations(src_t, trg_t, inliers, num_outliers)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,12 @@ from scipy.sparse import csc_array, coo_array, eye_array
 
 import clipperpy
 from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
-from ranktools import AnalyticCenterResult, AnalyticCenter, MaxCliqueCertifier, SDPResult
+from ranktools import (
+    AnalyticCenterResult,
+    AnalyticCenter,
+    MaxCliqueCertifier,
+    SDPResult,
+)
 
 
 class DataAssociationMethod(Enum):
@@ -133,7 +138,7 @@ class DataAssociationBlock:
         """
         if isinstance(x, torch.Tensor):
             x = x.detach().cpu().numpy()
-        
+
         # Retrieve the affinity matrix from the last forward pass
         M = self.get_affinity()
         # Check constraints
@@ -181,6 +186,7 @@ class DataAssociationBlock:
         self,
         kpt_3D_src: torch.Tensor | None = None,
         kpt_3D_trg: torch.Tensor | None = None,
+        x_init: np.ndarray | None = None,
     ):
         """Forward pass through the CLIPPER block. Keypoints with same index are assumed to be putative correspondences. The CLIPPER block will output a mask of inliers for the matched keypoints.
         Args:
@@ -197,7 +203,10 @@ class DataAssociationBlock:
                 "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
             )
         # Run CLIPPER
-        self.clipper.solve()
+        if x_init is not None:
+            self.clipper.solve(x_init)
+        else:
+            self.clipper.solve()
         # retrieve inliers
         soln = self.clipper.get_solution()
         thresh = np.max(soln.u) / 2
@@ -232,7 +241,7 @@ class DataAssociationBlock:
         inliers = torch.zeros(self.M.shape[0], dtype=torch.bool)
         inliers[nodes] = True
         # When using PMC, only the nodes are provided, so we need to convert them to a full solution vector for certification.
-        u , cost = self.inliers_to_solution(inliers)
+        u, cost = self.inliers_to_solution(inliers)
         if u is None:
             raise ValueError(
                 "Inliers do not form a clique. Cannot convert to solution vector."
@@ -240,7 +249,11 @@ class DataAssociationBlock:
 
         return inliers, u, cost
 
-    def run_sdp(self, kpt_3D_src, kpt_3D_trg):
+    def run_sdp(
+        self,
+        kpt_3D_src: torch.Tensor | None = None,
+        kpt_3D_trg: torch.Tensor | None = None,
+    ):
         """Run the SDP relaxation of the max clique problem defined by the affinity matrix M. This is a separate function to allow for reusing the affinity matrix for certification."""
         # Set up affinity matrix for max clique problem.
         if kpt_3D_src is not None and kpt_3D_trg is not None:
@@ -249,7 +262,7 @@ class DataAssociationBlock:
             raise ValueError(
                 "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
             )
-        
+
         # Retrieve the affinity matrix from the last forward pass
         M = self.get_affinity()
         # Set up central path certifier
@@ -273,7 +286,7 @@ class DataAssociationBlock:
         inliers = None
         if rank == 1:
             # Absolute value required here because the solution is invariant to sign flips
-            U_abs = np.abs(U[:, 0]) 
+            U_abs = np.abs(U[:, 0])
             thresh = np.max(U_abs) / 2
             inliers = torch.from_numpy(U_abs > thresh).bool()  # (N,)
         return inliers, U
@@ -339,8 +352,8 @@ class DataAssociationBlock:
 
     def run_ransac(
         self,
-        kpt_3D_src: torch.Tensor,
-        kpt_3D_trg: torch.Tensor,
+        kpt_3D_src: torch.Tensor | None = None,
+        kpt_3D_trg: torch.Tensor | None = None,
     ):
         """Forward pass through the RANSAC block. Keypoints with same index are assumed to be putative correspondences. The RANSAC block will output a mask of inliers for the matched keypoints.
         Args:
@@ -350,7 +363,13 @@ class DataAssociationBlock:
             inliers (torch.Tensor): Inlier mask for the matched keypoints, of shape (N,).
         """
         # Set up affinity matrix for max clique problem.
-        self.set_up_affinity_matrix(kpt_3D_src, kpt_3D_trg)
+        if kpt_3D_src is not None and kpt_3D_trg is not None:
+            self.set_up_affinity_matrix(kpt_3D_src, kpt_3D_trg)
+        elif self.M is None:
+            raise ValueError(
+                "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
+            )
+
         # track best inliers and cost
         best_inliers = None
         best_cost = np.inf
