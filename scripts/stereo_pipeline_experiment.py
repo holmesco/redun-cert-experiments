@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import numpy as np
 from enum import Enum
+from itertools import islice
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -51,6 +52,10 @@ class StereoPipelineExperimentConfig:
     save_results: bool = True
     # Seed for random number generation, useful for reproducibility
     random_seed: int = 42
+    # Whether to shuffle the dataset before processing
+    shuffle: bool = False
+    # Number of samples to use for the experiment. If None, use the entire dataset.
+    num_samples: int | None = None
 
 def load_experiment_config(config_path: Path) -> StereoPipelineExperimentConfig:
     # Start with defaults from dataclass
@@ -118,13 +123,15 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         batch_size=None,
         batch_sampler=None,
         num_workers=0,
-        shuffle=False,
+        shuffle=cfg.shuffle,
     )
+    if cfg.num_samples is not None:
+        dataloader = islice(dataloader, cfg.num_samples)
     # Check device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Run the experiment
     output_data = []
-    for data in tqdm(dataloader, desc="Processing frames"):
+    for data in tqdm(dataloader, total=cfg.num_samples, desc="Processing frames"):
         if data is None:
             continue  # Skip if the collate function returned None
         else:
