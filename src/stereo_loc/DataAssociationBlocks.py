@@ -2,13 +2,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Tuple
 import numpy as np
+import time
+
 import torch
 from scipy.sparse import csc_array, coo_array, eye_array
-import clipperpy
 
+import clipperpy
 from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
-from ranktools import AnalyticCenterResult, AnalyticCenter, MaxCliqueCertifier
-from cert_tools.sdp_solvers import solve_sdp_fusion
+from ranktools import AnalyticCenterResult, AnalyticCenter, MaxCliqueCertifier, SDPResult
 
 
 class DataAssociationMethod(Enum):
@@ -248,20 +249,18 @@ class DataAssociationBlock:
             raise ValueError(
                 "Affinity matrix has not been set up. Provide keypoints or call set_up_affinity_matrix first."
             )
-        # Get the constraints for the max clique problem
-        As, bs = get_maxclique_sdp_constraints(self.M)
-        constraints = [(A, b) for A, b in zip(As, bs)]
-        # Solve SDP: min <Q, X> s.t. <A_i, X> = b_i, X >= 0
-        X_sol, info = solve_sdp_fusion(
-            Q=-self.M,
-            Constraints=constraints,
-            adjust=False,
-            verbose=True,
-        )
-        time_sdp = info["time"]
+        
+        # Retrieve the affinity matrix from the last forward pass
+        M = self.get_affinity()
+        # Set up central path certifier
+        ac_params = self.config.ac_params.to_cpp_class()
+        certifier = MaxCliqueCertifier(-M, 0.0, ac_params)
+        t0 = time.time()
+        result = certifier.solve_sdp_mosek()
+        time_sdp = time.time() - t0
         print(f"SDP solve time: {time_sdp*1e3:.0f} ms")
-
         # Extract rank-1 solution via eigendecomposition
+        X_sol = result.X
         eigvals, eigvecs = np.linalg.eigh(X_sol)
         # Determine the rank based on relative ratio of eigenvalues
         max_eigval = eigvals[-1]
