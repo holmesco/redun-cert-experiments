@@ -300,16 +300,21 @@ def run_data_association(
     Returns ``(inliers, soln)`` where ``soln`` is the solution vector used for
     certification.
     """
-    if method == DataAssociationMethod.CLIPPER:
-        inliers, soln = block.run_clipper(x_init=x_init)
-    elif method == DataAssociationMethod.PMC:
-        inliers, soln, _ = block.run_pmc()
-    elif method == DataAssociationMethod.SDP:
-        inliers, soln = block.run_sdp()
-    elif method == DataAssociationMethod.RANSAC:
-        inliers, soln, _ = block.run_ransac()
-    else:
-        raise ValueError(f"Invalid data association method: {method}")
+    try:
+        if method == DataAssociationMethod.CLIPPER:
+            inliers, soln = block.run_clipper(x_init=x_init)
+        elif method == DataAssociationMethod.PMC:
+            inliers, soln, _ = block.run_pmc()
+        elif method == DataAssociationMethod.SDP:
+            inliers, soln = block.run_sdp()
+        elif method == DataAssociationMethod.RANSAC:
+            inliers, soln, _ = block.run_ransac()
+        else:
+            raise ValueError(f"Invalid data association method: {method}")
+    except Exception as e:
+        print(f"Data association solver failed with exception: {e}")
+        inliers = torch.zeros(block.num_assocs, dtype=torch.bool)
+        soln = None
     return inliers, soln
 
 
@@ -530,7 +535,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
                     # Optionally certify the data association solution and time it.
                     data_association_certified = False
                     t_certify = np.nan
-                    if cfg.data_association_config.certify:
+                    if cfg.data_association_config.certify and soln is not None:
                         t1 = time.perf_counter()
                         cert_result_da, _ = data_association.certify_solution(soln)
                         t2 = time.perf_counter()
