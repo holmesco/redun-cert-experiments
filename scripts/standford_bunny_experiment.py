@@ -73,6 +73,10 @@ class BunnyExperimentConfig:
             invariant_epsilon=0.05,
         )
     )
+    # Data association methods to sweep over for each problem instance.
+    methods: List[DataAssociationMethod] = field(
+        default_factory=lambda: [DataAssociationMethod.CLIPPER]
+    )
 
     # --- Poor initialization for CLIPPER ---
     # If True, initialize CLIPPER with a poor initial solution (all outliers).
@@ -523,43 +527,48 @@ def run_experiment(cfg: BunnyExperimentConfig):
                         x_init[:n_outlier] = 1.0
                     else:
                         x_init = None
-                    # Time the configured solver (CLIPPER, PMC, SDP or RANSAC).
-                    method = cfg.data_association_config.method
-                    t1 = time.perf_counter()
-                    inliers, soln = run_data_association(
-                        data_association, method, x_init=x_init
-                    )
-                    t2 = time.perf_counter()
-                    t_solver = t2 - t1
-
-                    # Optionally certify the data association solution and time it.
-                    data_association_certified = False
-                    t_certify = np.nan
-                    if cfg.data_association_config.certify and soln is not None:
+                    # Run each configured solver (CLIPPER, PMC, SDP or RANSAC) on
+                    # the same problem instance, reusing the cached affinity matrix.
+                    for method in cfg.methods:
                         t1 = time.perf_counter()
-                        cert_result_da, _ = data_association.certify_solution(soln)
-                        t2 = time.perf_counter()
-                        t_certify = t2 - t1
-                        data_association_certified = cert_result_da.certified
-
-                    # Precision / recall of the selected associations.
-                    Ain = A[inliers.cpu().numpy()]
-                    precision, recall = get_precision_recall(Ain, Agt)
-
-                    output_data.append(
-                        dict(
-                            rho=rho,
-                            m=m,
-                            trial=trial,
-                            t_affinity=t_affinity,
-                            t_solver=t_solver,
-                            t_certify=t_certify,
-                            cert_da=data_association_certified,
-                            precision=precision,
-                            recall=recall,
-                            num_inliers=int(inliers.sum().item()),
+                        inliers, soln = run_data_association(
+                            data_association, method, x_init=x_init
                         )
-                    )
+                        t2 = time.perf_counter()
+                        t_solver = t2 - t1
+
+                        # Optionally certify the data association solution and time it.
+                        data_association_certified = False
+                        t_certify = np.nan
+                        num_iter_cert = None
+                        if cfg.data_association_config.certify and soln is not None:
+                            cert_result_da = data_association.certify_solution(soln)
+                            t_certify = cert_result_da.solver_time
+                            num_iter_cert = cert_result_da.num_iterations
+                            data_association_certified = cert_result_da.certified
+
+                        # Precision / recall of the selected associations.
+                        Ain = A[inliers.cpu().numpy()]
+                        precision, recall = get_precision_recall(Ain, Agt)
+
+                        output_data.append(
+                            dict(
+                                method=method.value,
+                                outlier_ratio=rho,
+                                num_assoc=m,
+                                trial=trial,
+                                t_affinity=t_affinity,
+                                t_solver=t_solver,
+                                t_certify=t_certify,
+                                cert_da=data_association_certified,
+                                precision=precision,
+                                recall=recall,
+                                num_inliers=int(inliers.sum().item()),
+                                obj_value = data_association.obj_value,
+                                num_constraints = data_association.num_constraints,
+                                num_iter_cert = num_iter_cert
+                            )
+                        )
                     pbar.update(1)
 
     df = pd.DataFrame(output_data)

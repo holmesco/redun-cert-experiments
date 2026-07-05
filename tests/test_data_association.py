@@ -38,7 +38,7 @@ def test_clipper(bunny_stereo_synthetic):
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
-    result, cost = data_association.certify_solution(soln, check_constraints=True)
+    result = data_association.certify_solution(soln, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
 
 
@@ -86,7 +86,7 @@ def test_clipper_threshold(bunny_stereo_synthetic):
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
 
-    result, cost = data_association.certify_solution(x, check_constraints=True)
+    result = data_association.certify_solution(x, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
 
 
@@ -113,7 +113,7 @@ def test_sdp(bunny_stereo_synthetic):
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
-    result, cost = data_association.certify_solution(u, check_constraints=True)
+    result = data_association.certify_solution(u, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
 
 
@@ -165,7 +165,7 @@ def test_ransac_cert(bunny_stereo_synthetic):
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
     x = x_torch.cpu().numpy()
-    result, cost = data_association.certify_solution(x, check_constraints=True)
+    result = data_association.certify_solution(x, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
 
 
@@ -190,5 +190,5 @@ def test_maxclique_cert(bunny_stereo_synthetic):
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
 
-    result, cost = data_association.certify_solution(x, check_constraints=True)
+    result = data_association.certify_solution(x, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"

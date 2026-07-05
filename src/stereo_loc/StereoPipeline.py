@@ -192,7 +192,7 @@ class StereoPipeline:
         data_association_certified = False
         cert_result_da = None
         if self.config.data_association_config.certify:
-            cert_result_da, cost_da = self.data_association.certify_solution(soln)
+            cert_result_da= self.data_association.certify_solution(soln)
             data_association_certified = cert_result_da.certified
         if self.config.verbose:
             print(f"Data association certification result: {cert_result_da}")

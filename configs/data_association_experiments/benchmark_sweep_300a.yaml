@@ -6,9 +6,9 @@ seed: 0
 noise_sigma: 0.01
 noise_beta: 0.0554
 # Sweep parameters
-num_assocs: [100]
-outlier_ratios: [0.1]
-num_trials: 1
+num_assocs: [100 200 300 400]
+outlier_ratios: [0.1 0.3 0.5 0.7]
+num_trials: 10
 # turn off results storage
 save_results: True
 plot: False
@@ -19,7 +19,6 @@ data_association_config:
   invariant_epsilon: 0.05
   invariant_sigma: 0.015
   certify: True
-  method: CLIPPER
   ac_params:
     verbose: True
     lin_solver: MFCG_LRP

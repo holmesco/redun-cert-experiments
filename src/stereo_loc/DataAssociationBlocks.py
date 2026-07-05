@@ -113,13 +113,17 @@ class DataAssociationBlock:
         params.rounding = self.config.clipper_rounding_method
         # define clipper object
         self.clipper = clipperpy.CLIPPER(invariant, params)
+        # Track number of constraints for certification
+        self.num_constraints: int | None = None
+        # Track cost of the solution for certification
+        self.obj_value: float | None = None
 
     def certify_solution(
         self,
         x: np.ndarray | torch.Tensor,
         cost: float = None,
         check_constraints: bool = False,
-    ) -> Tuple[AnalyticCenterResult, float]:
+    ) -> AnalyticCenterResult:
         """Certify the solution x for the max clique problem defined by M.
 
         Parameters
@@ -153,9 +157,12 @@ class DataAssociationBlock:
         # Set up central path certifier
         ac_params = self.config.ac_params.to_cpp_class()
         certifier = MaxCliqueCertifier(-M, cost, ac_params)
+        # Update metrics for tracking.
+        self.num_constraints = certifier.m
+        self.obj_value = cost
         # Certify the solution
         result = certifier.certify(x)
-        return result, cost
+        return result
 
     def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):
         """Set up the affinity matrix for the CLIPPER block. This is a separate function to allow for reusing the affinity matrix for certification.
@@ -272,6 +279,9 @@ class DataAssociationBlock:
         result = certifier.solve_sdp_mosek()
         time_sdp = time.time() - t0
         print(f"SDP solve time: {time_sdp*1e3:.0f} ms")
+        # Update metrics for tracking.
+        self.num_constraints = certifier.m
+        self.obj_value = result.obj_value
         # Extract rank-1 solution via eigendecomposition
         X_sol = result.X
         eigvals, eigvecs = np.linalg.eigh(X_sol)
