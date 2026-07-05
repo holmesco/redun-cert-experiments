@@ -38,14 +38,14 @@ data_association_config:
   ac_params:
     verbose: True
     lin_solver: MFCG_LRP
-    lin_solve_max_iter: 400
-    lin_solve_tol: 1e-7
+    lin_solve_max_iter: 200
+    lin_solve_tol: 1e-10
     delta: 1e-7
     rescale_lin_sys: False
     max_iter: 10
     # Early stopping local
     early_stop_angle: True
-    max_angle: 5e-4
+    max_angle: 1e-5
     # Perturbation parameters
     perturb_cost: True
     eps_cost: 1e-7
