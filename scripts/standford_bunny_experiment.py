@@ -292,6 +292,8 @@ def _associations_to_keypoints(
 def run_data_association(
     block: DataAssociationBlock,
     method: DataAssociationMethod,
+    kpt_3D_src: torch.Tensor,
+    kpt_3D_trg: torch.Tensor,
     x_init: Optional[np.ndarray] = None
 ) -> Tuple[torch.Tensor, np.ndarray | torch.Tensor]:
     """Dispatch to the configured data association solver.
@@ -312,7 +314,7 @@ def run_data_association(
         elif method == DataAssociationMethod.SDP:
             inliers, soln = block.run_sdp()
         elif method == DataAssociationMethod.RANSAC:
-            inliers, soln, _ = block.run_ransac()
+            inliers, soln, _ = block.run_ransac(kpt_3D_src, kpt_3D_trg)
         else:
             raise ValueError(f"Invalid data association method: {method}")
     except Exception as e:
@@ -430,6 +432,7 @@ def plot_associations(
     trg_t: torch.Tensor,
     inliers: torch.Tensor,
     num_outliers: int = 0,
+    certified: bool = False,
 ) -> None:
     """Plot the source/target point clouds and their putative associations.
 
@@ -467,7 +470,7 @@ def plot_associations(
             alpha=0.5,
             linewidth=0.5,
         )
-
+    ax.set_title(f"Data Association (certified={certified})")
     ax.legend()
     # ax.set_xlabel("X")
     # ax.set_ylabel("Y")
@@ -484,12 +487,15 @@ def plot_associations(
     plt.show()
 
 
+def set_seed(seed: int) -> np.random.Generator:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        rng = np.random.default_rng(seed)
+        return rng
+    
 def run_experiment(cfg: BunnyExperimentConfig):
+    rng = set_seed(cfg.seed)
     # Seed everything for reproducibility.
-    np.random.seed(cfg.seed)
-    torch.manual_seed(cfg.seed)
-    rng = np.random.default_rng(cfg.seed)
-
     pcd0 = read_ply(ROOT / cfg.ply_path)
     pcd0 = scale_to_cube(pcd0, cfg.scale_cube_size)
     # center the points on zero
@@ -512,6 +518,8 @@ def run_experiment(cfg: BunnyExperimentConfig):
         for rho in cfg.outlier_ratios:
             for m in cfg.num_assocs:
                 for trial in range(cfg.num_trials):
+                    # Reset rng for reproducibility across trials.
+                    rng = set_seed(cfg.seed + trial)
                     # Generate the problem instance for this experiment.
                     src_t, trg_t, A, Agt, T_10 = setup_fn(cfg, pcd0, m, rho, rng)
 
@@ -529,10 +537,13 @@ def run_experiment(cfg: BunnyExperimentConfig):
                         x_init = None
                     # Run each configured solver (CLIPPER, PMC, SDP or RANSAC) on
                     # the same problem instance, reusing the cached affinity matrix.
+                    inliers_list = []
                     for method in cfg.methods:
+                        # Reset rng seed again (due to inconsistency in solver rng calls.)
+                        rng = set_seed(cfg.seed + trial)
                         t1 = time.perf_counter()
                         inliers, soln = run_data_association(
-                            data_association, method, x_init=x_init
+                            data_association, method, src_t, trg_t, x_init=x_init
                         )
                         t2 = time.perf_counter()
                         t_solver = t2 - t1
@@ -566,11 +577,12 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                 num_inliers=int(inliers.sum().item()),
                                 obj_value = data_association.obj_value,
                                 num_constraints = data_association.num_constraints,
-                                num_iter_cert = num_iter_cert
+                                num_iter_cert = num_iter_cert,
                             )
                         )
+                        inliers_list.append(inliers)
                     pbar.update(1)
-
+                    
     df = pd.DataFrame(output_data)
 
     if cfg.save_results:
@@ -585,6 +597,9 @@ def run_experiment(cfg: BunnyExperimentConfig):
     else:
         print("\nExperiment results:")
         print(df)
+        # print whether was certified or not
+        print("\nCertification results:")
+        print(df[["method", "cert_da", "t_certify", "num_iter_cert"]])
 
     # Plot the final problem instance (point clouds + associations).
     if cfg.experiment_type == ExperimentType.ADVERSARIAL:
@@ -592,7 +607,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
     else:
         num_outliers = 0
     if cfg.plot:
-        plot_associations(src_t, trg_t, inliers, num_outliers)
+        plot_associations(src_t, trg_t, inliers, num_outliers, data_association_certified)
 
 
 if __name__ == "__main__":

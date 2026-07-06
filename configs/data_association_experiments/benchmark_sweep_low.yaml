@@ -1,4 +1,4 @@
-experiment_name: "clipper_benchmark_test"
+experiment_name: "benchmark_sweep_low"
 experiment_type: CLIPPER_BENCHMARK
 ply_path: "data/bun10k.ply"
 seed: 0
@@ -6,19 +6,22 @@ seed: 0
 noise_sigma: 0.01
 noise_beta: 0.0554
 # Sweep parameters
-num_assocs: [100 200 300 400]
-outlier_ratios: [0.1 0.3 0.5 0.7]
+num_assocs: [50, 100, 150, 200]
+outlier_ratios: [0.1, 0.3, 0.5, 0.7]
 num_trials: 10
 # turn off results storage
 save_results: True
 plot: False
 # Methods to run
-methods: [CLIPPER]
+methods: [CLIPPER, PMC, RANSAC]
 # Data association config
 data_association_config:
   invariant_epsilon: 0.05
   invariant_sigma: 0.015
   certify: True
+  ransac_num_sample_pts: 6
+  ransac_num_iterations: 200
+  ransac_inlier_threshold: 0.025
   ac_params:
     verbose: True
     lin_solver: MFCG_LRP
@@ -29,7 +32,7 @@ data_association_config:
     max_iter: 10
     # Early stopping local
     early_stop_angle: True
-    max_angle: 1e-5
+    max_angle: 5e-5
     # Perturbation parameters
     perturb_cost: True
     eps_cost: 1e-7

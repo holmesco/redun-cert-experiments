@@ -362,8 +362,8 @@ class DataAssociationBlock:
 
     def run_ransac(
         self,
-        kpt_3D_src: torch.Tensor | None = None,
-        kpt_3D_trg: torch.Tensor | None = None,
+        kpt_3D_src: torch.Tensor,
+        kpt_3D_trg: torch.Tensor,
     ):
         """Forward pass through the RANSAC block. Keypoints with same index are assumed to be putative correspondences. The RANSAC block will output a mask of inliers for the matched keypoints.
         Args:
@@ -386,7 +386,7 @@ class DataAssociationBlock:
         best_soln = None
         with torch.no_grad():
             for i in range(self.config.ransac_num_iterations):
-                # Randomly sample 3 points
+                # Randomly sample N points
                 idx = torch.randperm(kpt_3D_src.shape[1])[
                     : self.config.ransac_num_sample_pts
                 ]
