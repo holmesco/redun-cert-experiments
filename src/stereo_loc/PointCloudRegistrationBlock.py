@@ -89,3 +89,44 @@ class PointCloudRegistrationBlock:
             adjust_cost=self.config.adjust_cost,
         )
         return result
+
+
+def estimate_pose_svd(keypoints_3D_src, keypoints_3D_trg):
+    """Estimate the relative pose between the source and target frames using SVD.
+
+    Args:
+        keypoints_3D_src (torch.Tensor): 3D point coordinates of keypoints from source frame, of shape (4, N).
+        keypoints_3D_trg (torch.Tensor): 3D point coordinates of keypoints from target frame, of shape (4, N).
+    Returns:
+        T_trg_src (torch.Tensor): Relative transform from the source to the target frame,
+    """
+
+    # Compute centroids (elementwise multiplication/division)
+    n_points = keypoints_3D_src.shape[1]
+    centroid_src = (
+        torch.sum(keypoints_3D_src[0:3, :], dim=1, keepdim=True) / n_points
+    )  # 3x1
+    centroid_trg = (
+        torch.sum(keypoints_3D_trg[0:3, :], dim=1, keepdim=True) / n_points
+    )  # 3x1
+    # Compute centered coordinates
+    src_centered = keypoints_3D_src[0:3, :] - centroid_src  # 3xN
+    trg_centered = keypoints_3D_trg[0:3, :] - centroid_trg
+    # Compute rotation and translation (T_trg_src in sensor frame)
+    H = trg_centered @ src_centered.transpose(1, 0).contiguous()  # 3x3
+    U, S, V = torch.svd(H)
+    det_UV = torch.det(U) * torch.det(V)
+    diag = torch.diag_embed(torch.Tensor([1.0, 1.0, det_UV]).type_as(V))  # 3x3
+    R_trg_src = U @ diag @ V.transpose(1, 0)  # 3x3
+    # Translation from trg to src given in src frame
+    # NOTE: Uses the fact that the centroids should be coincident after rotation.
+    t_src_trg_intrg = centroid_trg - R_trg_src @ centroid_src  # 3x1
+
+    # Create translation matrix
+    zeros = torch.zeros(1, 3).type_as(V)  # 1x3
+    one = torch.ones(1, 1).type_as(V)  # 1x1
+    trans_cols = torch.cat([t_src_trg_intrg, one], dim=0)  # 4x1
+    rot_cols = torch.cat([R_trg_src, zeros], dim=0)  # 4x3
+    T_trg_src = torch.cat([rot_cols, trans_cols], dim=1)  # 4x4
+
+    return T_trg_src

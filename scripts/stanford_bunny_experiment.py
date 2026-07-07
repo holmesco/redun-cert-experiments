@@ -29,13 +29,14 @@ from scipy.spatial import KDTree
 from tqdm import tqdm
 import open3d as o3d
 from scipy.spatial.transform import Rotation
-
+from pylgmath import Transformation
 
 from stereo_loc.DataAssociationBlocks import (
     DataAssociationBlock,
     DataAssociationConfig,
     DataAssociationMethod,
 )
+from stereo_loc.PointCloudRegistrationBlock import estimate_pose_svd
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +64,8 @@ class BunnyExperimentConfig:
     seed: int = 0
     # Save results
     save_results: bool = True
+    # Registration results
+    registration: bool = False
     # Plot the final problem instance (point clouds + associations) at the end.
     plot: bool = False
     # --- Data association config (CLIPPER invariant parameters, etc.) ---
@@ -81,11 +84,11 @@ class BunnyExperimentConfig:
     # --- Poor initialization for CLIPPER ---
     # If True, initialize CLIPPER with a poor initial solution (all outliers).
     poor_initialization: bool = False
-
+    # Option to also retrieve the global solution by solving the SDP
+    get_global_solution: bool = False
     # --- Synthetic noise parameters (bounded normal noise) ---
     noise_sigma: float = 0.01
     noise_beta: float = 5.54 * 0.01
-
     # --- Synthetic transformation parameters (random rotation + translation) ---
     # Ground truth transformation applied to the bunny to generate the target point cloud.
     # If None, random translation in [-1.0, 1.0]^3
@@ -107,6 +110,12 @@ class BunnyExperimentConfig:
     )
     # Number of Monte Carlo trials per (rho, m) configuration.
     num_trials: int = 20
+    # Sweep bounds for the noise thresholds
+    threshold_mult_min: float = 1.0
+    threshold_mult_max: float = 1.0
+    # Number of values for the threshold multiplier to sweep over (log spaced between min and max).
+    threshold_mult_num: int = 1
+    
 
 
 def load_experiment_config(config_path: Path) -> BunnyExperimentConfig:
@@ -454,6 +463,7 @@ def plot_associations(
     src_t: torch.Tensor,
     trg_t: torch.Tensor,
     inliers: torch.Tensor,
+    inliers_global: torch.Tensor | None = None,
     num_outliers: int = 0,
     certified: bool = False,
 ) -> None:
@@ -473,6 +483,11 @@ def plot_associations(
 
     # Inlier mask as selected by the data association solver.
     is_inlier = inliers.cpu().numpy().astype(bool)
+    is_inlier_global = (
+        inliers_global.cpu().numpy().astype(bool)
+        if inliers_global is not None
+        else None
+    )
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
@@ -491,24 +506,43 @@ def plot_associations(
             s=5,
             label="target (outliers)",
         )
-        ax.scatter(
-            trg[num_outliers:, 0],
-            trg[num_outliers:, 1],
-            trg[num_outliers:, 2],
-            c="blue",
-            s=5,
-            label="target (inliers)",
-        )
-    # Association lines: green for inliers, red for outliers, alpha 0.5.
+    ax.scatter(
+        trg[num_outliers:, 0],
+        trg[num_outliers:, 1],
+        trg[num_outliers:, 2],
+        c="blue",
+        s=5,
+        label="target (inliers)",
+    )
+    # Association lines: green for inliers, red for outliers, alpha 0.5. When a
+    # global solution is available, disagreements are highlighted: red where the
+    # local solution flags an inlier the global one rejects, orange for the
+    # reverse, and lines the global solution also rejects are not drawn.
     for i in range(src.shape[0]):
-        color = "green" if is_inlier[i] else "red"
+        lw = 0.5
+        alpha = 0.5
+        if inliers_global is not None:
+            if is_inlier[i] and is_inlier_global[i]:
+                color = "green"
+            elif is_inlier[i] and not is_inlier_global[i]:
+                color = "red"
+                lw = 2.0
+                alpha = 1.0
+            elif not is_inlier[i] and is_inlier_global[i]:
+                color = "orange"
+                lw = 2.0
+                alpha = 1.0
+            else:
+                continue
+        else:
+            color = "green" if is_inlier[i] else "red"
         ax.plot(
             [src[i, 0], trg[i, 0]],
             [src[i, 1], trg[i, 1]],
             [src[i, 2], trg[i, 2]],
             color=color,
-            alpha=0.5,
-            linewidth=0.5,
+            alpha=alpha,
+            linewidth=lw,
         )
     ax.set_title(f"Data Association (certified={certified})")
     ax.legend()
@@ -566,7 +600,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
                     # Reset rng for reproducibility across trials.
                     rng = set_seed(cfg.seed + trial)
                     # Generate the problem instance for this experiment.
-                    src_t, trg_t, A, Agt, T_10 = setup_fn(cfg, pcd0, m, rho, rng)
+                    src_t, trg_t, A, Agt, T_trg_src_gt_np = setup_fn(cfg, pcd0, m, rho, rng)
 
                     # Time affinity-matrix construction.
                     t1 = time.perf_counter()
@@ -592,7 +626,11 @@ def run_experiment(cfg: BunnyExperimentConfig):
                         )
                         t2 = time.perf_counter()
                         t_solver = t2 - t1
-
+                        # if enabled, also get the globally optimal solution by solving the SDP 
+                        inliers_global, soln_global = None, None
+                        if cfg.get_global_solution:
+                            inliers_global, soln_global = data_association.run_sdp()
+                        
                         # Optionally certify the data association solution and time it.
                         data_association_certified = False
                         t_certify = np.nan
@@ -606,7 +644,26 @@ def run_experiment(cfg: BunnyExperimentConfig):
                         # Precision / recall of the selected associations.
                         Ain = A[inliers.cpu().numpy()]
                         precision, recall = get_precision_recall(Ain, Agt)
+                        
+                        # Registration
+                
+                        if cfg.registration and inliers.sum() > 0:
+                            # Restrict measurements to inliers and estimate the transformation using SVD
+                            src_inliers = src_t[:, inliers]
+                            trg_inliers = trg_t[:, inliers]
+                            T = estimate_pose_svd(src_inliers, trg_inliers)
+                            # Compute the relative error between the estimated transformation and the ground truth
+                            T_trg_src = Transformation(T_ba=T.cpu().numpy())
+                            T_trg_src_gt = Transformation(T_ba=T_trg_src_gt_np)
+                            T_error = T_trg_src.inverse() * T_trg_src_gt
+                            rel_trans_error = np.linalg.norm(T_error.r_ab_inb()) / np.linalg.norm(T_trg_src_gt.r_ab_inb())
+                            theta_error = np.linalg.norm(Rotation.from_matrix(T_error.matrix()[:3,:3]).as_rotvec())
+                            rel_rot_error = theta_error / np.linalg.norm(Rotation.from_matrix(T_trg_src_gt.matrix()[:3,:3]).as_rotvec())
+                        else:
+                            rel_trans_error = None
+                            rel_rot_error = None
 
+                        # Store the results
                         output_data.append(
                             dict(
                                 method=method.value,
@@ -623,6 +680,8 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                 obj_value=data_association.obj_value,
                                 num_constraints=data_association.num_constraints,
                                 num_iter_cert=num_iter_cert,
+                                rel_rot_error=rel_rot_error,
+                                rel_trans_error=rel_trans_error,
                             )
                         )
                         inliers_list.append(inliers)
@@ -653,7 +712,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
         num_outliers = 0
     if cfg.plot:
         plot_associations(
-            src_t, trg_t, inliers, num_outliers, data_association_certified
+            src_t, trg_t, inliers, inliers_global, num_outliers, data_association_certified
         )
 
 
