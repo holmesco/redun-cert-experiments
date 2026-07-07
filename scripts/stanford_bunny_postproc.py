@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
@@ -176,6 +177,58 @@ def _grouped_boxplot(ax, x_col, x_categories, series, x_labels=None, box_width=0
     ax.legend(handles, [label for label, _, _, _ in series])
 
 
+def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
+    """Draw side-by-side box plots at continuous, log-scaled x positions.
+
+    ``cats`` are the actual (numeric) x values and ``series`` is a list of
+    ``(label, color, values_per_cat)`` tuples where ``values_per_cat[i]`` holds
+    the values for ``cats[i]``. Boxes are positioned and sized multiplicatively
+    (in log space) so they appear uniform on a log x-axis, and the cluster for
+    each category is centered on its value. The x-axis is set to log scale with
+    a tick at every decade.
+    """
+    cats = np.asarray(sorted(cats), dtype=float)
+    logc = np.log10(cats)
+    # Smallest gap between categories (in decades) sets the cluster width.
+    dlog = float(np.min(np.diff(logc))) if len(cats) > 1 else 1.0
+    slot = dlog * cluster_frac / max(len(series), 1)
+
+    for j, (_, color, per_cat) in enumerate(series):
+        # Multiplicative offset of this series within the cluster.
+        off = -dlog * cluster_frac / 2 + slot * (j + 0.5)
+        data, positions, widths = [], [], []
+        for i in range(len(cats)):
+            vals = np.asarray(per_cat[i])
+            vals = vals[~np.isnan(vals)] if vals.dtype.kind == "f" else vals
+            if len(vals) == 0:
+                continue
+            center = 10.0 ** (logc[i] + off)
+            data.append(vals)
+            positions.append(center)
+            # Width in data units that renders as a fixed span in log space.
+            widths.append(center * (10.0 ** (slot * 0.45) - 10.0 ** (-slot * 0.45)))
+        if not data:
+            continue
+        ax.boxplot(
+            data,
+            positions=positions,
+            widths=widths,
+            patch_artist=True,
+            showfliers=True,
+            manage_ticks=False,
+            boxprops=dict(facecolor=color, edgecolor=color, alpha=0.6),
+            medianprops=dict(color="black"),
+            whiskerprops=dict(color=color),
+            capprops=dict(color=color),
+            flierprops=dict(marker=".", markersize=3, markerfacecolor=color, markeredgecolor=color, alpha=0.6),
+        )
+
+    ax.set_xscale("log")
+    ax.xaxis.set_major_locator(mticker.LogLocator(base=10.0))
+    ax.xaxis.set_minor_locator(mticker.LogLocator(base=10.0, subs="auto"))
+    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+
+
 def _solve_certify_series(df):
     """Build the ``_grouped_boxplot`` series for solve + certify.
 
@@ -309,6 +362,132 @@ def certifier_confusion(
     return table
 
 
+def plot_invariant_sweep_boxplots(
+    df: pd.DataFrame,
+    save_path: Optional[Path] = None,
+    show: bool = True,
+):
+    """Box-plot version of :func:`plot_invariant_sweep`.
+
+    Produces a two-panel figure (shared ``inv_mult`` x-axis). The invariant
+    multiplier is treated as a continuous variable: boxes sit at their actual
+    value on a log-scaled x-axis with a tick at every decade. The top panel shows
+    side-by-side box plots of the relative translation and rotation error within
+    each invariant multiplier (log y-axis). The bottom panel shows a box plot of
+    the percent inliers found per invariant multiplier, overlaid with a line for
+    the percent of trials whose data association was certified (``cert_da``),
+    which is boolean and so has no meaningful distribution per group.
+
+    Returns the created ``(fig, axes)``.
+    """
+    cats = sorted(df["inv_mult"].unique())
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
+    ax_err, ax_cert, ax_corres = axes
+
+    # --- Top panel: registration error distributions (log scale) ---
+    err_series = [
+        (
+            "Trans.",
+            "#4C72B0",
+            [df.loc[df["inv_mult"] == c, "rel_trans_error"].values for c in cats],
+        ),
+        (
+            "Rot.",
+            "#DD8452",
+            [df.loc[df["inv_mult"] == c, "rel_rot_error"].values for c in cats],
+        ),
+    ]
+    _log_grouped_boxplot(ax_err, cats, err_series)
+    ax_err.set_yscale("log")
+    ax_err.set_ylabel("Relative Registration Error (%)")
+    ax_err.grid(True, which="both", alpha=0.3)
+    err_handles = [
+        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6)
+        for _, color, _ in err_series
+    ]
+    ax_err.legend(err_handles, [label for label, _, _ in err_series])
+    
+    # --- Middle panel: percent of trials certified (boolean) ---
+    cert_pct = df.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
+    ax_cert.plot(cats, cert_pct.values, "-", color="#0C0304")
+    ax_cert.set_ylabel("Percent Trials Certified (%)")
+    # ax_cert.set_ylim(0, 101)
+    ax_cert.grid(True, which="both", alpha=0.3)
+
+    # --- Bottom panel: percent inliers distribution + certified-trial line ---
+    inlier_series = [
+        (
+            "Accptd. Corresp.",
+            "#55A868",
+            [df.loc[df["inv_mult"] == c, "percent_inliers"].values for c in cats],
+        )
+    ]
+    recall_series = [
+        (
+            "Recall",
+            "#C9261B",
+            [df.loc[df["inv_mult"] == c, "recall"].values*100 for c in cats],
+        )
+    ]
+    precision_series = [
+        (
+            "Precision",
+            "#2522C9",
+            [df.loc[df["inv_mult"] == c, "precision"].values*100 for c in cats],
+        )
+    ]
+    _log_grouped_boxplot(ax_corres, cats, inlier_series)
+    _log_grouped_boxplot(ax_corres, cats, recall_series)
+    _log_grouped_boxplot(ax_corres, cats, precision_series)
+    ax_corres.set_ylabel("Percent (%)")
+    ax_corres.set_ylim(0, 101)
+    ax_corres.grid(True, which="both", alpha=0.3)
+    # reference line for number of ground-truth correspondences
+    ax_corres.axhline(y=50, color='grey', linestyle='--', label='Ground Truth Correspondences')
+    ax_corres.text(x=0.007, y=51, s="Percent True \nCorrespondences", color='grey', va='bottom')
+
+
+    # Reconcile the box-plot legend with the certified-trials line.
+    handles = [
+        plt.Line2D([0], [0], color="#55A868", lw=6, alpha=0.6),
+        plt.Line2D([0], [0], color="#C9261B", lw=6, alpha=0.6),
+        plt.Line2D([0], [0], color="#2522C9", lw=6, alpha=0.6),
+    ]
+    ax_corres.legend(handles, ["Accptd. Corresp.", "Recall", "Precision"])
+    ax_corres.set_xlabel("Graph Noise Parameter / Actual Noise Level")
+
+    fig.tight_layout()
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved figure to {save_path}")
+    if show:
+        plt.show()
+    return fig, axes
+
+
+def invariant_sweep_results():
+    df = load_results("invariant_sweep", timestamp = "20260707T2030")
+    print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
+    df['percent_inliers'] = df['num_inliers'] / df['num_assoc'] * 100.0
+
+    summary = df.groupby("inv_mult").agg(
+        rel_trans_error=("rel_trans_error", "mean"),
+        rel_rot_error=("rel_rot_error", "mean"),
+        cert_da_pct=("cert_da", lambda s: s.mean() * 100.0),
+        num_inliers=("percent_inliers", "mean"),
+    )
+    print("\nMetrics by invariant multiplier (mean across trials):")
+    print(summary.to_string())
+
+    plot_invariant_sweep_boxplots(
+        df,
+        save_path=DATA_DIR / "invariant_sweep" / "figures" / "invariant_sweep_boxplots.png",
+    )
+
+
 def benchmark_sweep_low_results():
     df = load_benchmark_sweep_low()
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
@@ -334,4 +513,5 @@ def benchmark_sweep_low_results():
 
 
 if __name__ == "__main__":
-    benchmark_sweep_low_results()
+    # benchmark_sweep_low_results()
+    invariant_sweep_results()

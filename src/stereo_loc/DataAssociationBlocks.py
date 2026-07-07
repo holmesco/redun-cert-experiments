@@ -100,25 +100,30 @@ class DataAssociationBlock:
                 print(
                     "Warning: RANSAC inlier threshold is greater than 0.5x invariant epsilon. This may lead to RANSAC inliers that are not cliques of the data association graph."
                 )
-
-        # Affinity matrix
-        self.M: np.ndarray | None = None
-        self.M_torch: torch.Tensor | None = None
+        # Create clipper object
+        self.set_clipper()
+        # Track number of constraints for certification
+        self.num_constraints: int | None = None
+        # Track cost of the solution for certification
+        self.obj_value: float | None = None
+        
+    def set_clipper(self, invariant_sigma: float = None, invariant_epsilon: float = None):
+        """Create a CLIPPER instance for data association."""
         # Set up invariant
         iparams = clipperpy.invariants.EuclideanDistanceParams()
-        iparams.sigma = self.config.invariant_sigma
-        iparams.epsilon = self.config.invariant_epsilon
+        iparams.sigma = invariant_sigma if invariant_sigma is not None else self.config.invariant_sigma
+        iparams.epsilon = invariant_epsilon if invariant_epsilon is not None else self.config.invariant_epsilon
         invariant = clipperpy.invariants.EuclideanDistance(iparams)
         # Define rounding strategy
         params = clipperpy.Params()
         params.rounding = self.config.clipper_rounding_method
         # define clipper object
         self.clipper = clipperpy.CLIPPER(invariant, params)
-        # Track number of constraints for certification
-        self.num_constraints: int | None = None
-        # Track cost of the solution for certification
-        self.obj_value: float | None = None
+        # Reset affinity matrix
+        self.M: np.ndarray | None = None
+        self.M_torch: torch.Tensor | None = None
 
+    
     def certify_solution(
         self,
         x: np.ndarray | torch.Tensor,

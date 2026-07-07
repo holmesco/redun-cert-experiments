@@ -110,12 +110,11 @@ class BunnyExperimentConfig:
     )
     # Number of Monte Carlo trials per (rho, m) configuration.
     num_trials: int = 20
-    # Sweep bounds for the noise thresholds
-    threshold_mult_min: float = 1.0
-    threshold_mult_max: float = 1.0
+    # Sweep bounds for the noise thresholds.
+    invariant_mult_min: float = 1.0
+    invariant_mult_max: float = 1.0
     # Number of values for the threshold multiplier to sweep over (log spaced between min and max).
-    threshold_mult_num: int = 1
-    
+    invariant_mult_num: int = 1
 
 
 def load_experiment_config(config_path: Path) -> BunnyExperimentConfig:
@@ -340,16 +339,24 @@ def get_transformation(
     """Build a random homogeneous transform ``T_10``.
 
     Uses ``rotation`` (a rotation vector) and ``translation`` when provided,
-    otherwise samples a random rotation and a translation in ``[-1, 1]^3``.
+    otherwise samples a random axis (with fixed magnitude) for each.
     """
+    # Fixed magnitudes used when the rotation/translation are sampled randomly.
+    ROTATION_ANGLE = np.pi / 4  # radians
+    TRANSLATION_NORM = 1.0
+
     if rotation is not None:
         R_10 = Rotation.from_rotvec(np.array(rotation)).as_matrix()
     else:
-        R_10 = Rotation.random().as_matrix()
+        axis = rng.normal(size=3)
+        axis /= np.linalg.norm(axis)
+        R_10 = Rotation.from_rotvec(ROTATION_ANGLE * axis).as_matrix()
     if translation is not None:
         t_01_1 = np.array(translation)
     else:
-        t_01_1 = rng.uniform(-1.0, 1.0, size=3)
+        axis = rng.normal(size=3)
+        axis /= np.linalg.norm(axis)
+        t_01_1 = TRANSLATION_NORM * axis
     T_10 = np.eye(4)
     T_10[:3, :3] = R_10
     T_10[:3, 3] = t_01_1
@@ -591,101 +598,140 @@ def run_experiment(cfg: BunnyExperimentConfig):
     else:
         raise ValueError(f"Unknown experiment type: {cfg.experiment_type}")
 
+    # Generate array of multiplier values for the invariant values
+    invariant_mults = np.logspace(
+        np.log10(cfg.invariant_mult_min),
+        np.log10(cfg.invariant_mult_max),
+        cfg.invariant_mult_num,
+    )
+
+    # Run main loop
     output_data = []
-    total = len(cfg.outlier_ratios) * len(cfg.num_assocs) * cfg.num_trials
+    total = (
+        len(cfg.outlier_ratios)
+        * len(cfg.num_assocs)
+        * cfg.num_trials
+        * len(cfg.methods)
+        * len(invariant_mults)
+    )
+    index = 0
     with tqdm(total=total, desc=cfg.experiment_type.value) as pbar:
-        for rho in cfg.outlier_ratios:
-            for m in cfg.num_assocs:
-                for trial in range(cfg.num_trials):
-                    # Reset rng for reproducibility across trials.
-                    rng = set_seed(cfg.seed + trial)
-                    # Generate the problem instance for this experiment.
-                    src_t, trg_t, A, Agt, T_trg_src_gt_np = setup_fn(cfg, pcd0, m, rho, rng)
+        for invariant_mult in invariant_mults:
+            # Reset Clipper using the new invariant values for this multiplier
+            invariant_sigma = (
+                cfg.data_association_config.invariant_sigma * invariant_mult
+            )
+            invariant_epsilon = (
+                cfg.data_association_config.invariant_epsilon * invariant_mult
+            )
+            data_association.set_clipper(
+                invariant_sigma=invariant_sigma, invariant_epsilon=invariant_epsilon
+            )
+            for rho in cfg.outlier_ratios:
+                for m in cfg.num_assocs:
+                    for trial in range(cfg.num_trials):
+                        # Reset rng for reproducibility across trials.
+                        index += 1
+                        rng = set_seed(cfg.seed + index)
+                        # Generate the problem instance for this experiment.
+                        src_t, trg_t, A, Agt, T_trg_src_gt_np = setup_fn(
+                            cfg, pcd0, m, rho, rng
+                        )
 
-                    # Time affinity-matrix construction.
-                    t1 = time.perf_counter()
-                    data_association.set_up_affinity_matrix(src_t, trg_t)
-                    t2 = time.perf_counter()
-                    t_affinity = t2 - t1
-                    # Initialization for CLIPPER
-                    if cfg.poor_initialization:
-                        n_outlier = len(A) - len(Agt)
-                        x_init = np.zeros(src_t.shape[1], dtype=np.float64)
-                        x_init[:n_outlier] = 1.0
-                    else:
-                        x_init = None
-                    # Run each configured solver (CLIPPER, PMC, SDP or RANSAC) on
-                    # the same problem instance, reusing the cached affinity matrix.
-                    inliers_list = []
-                    for method in cfg.methods:
-                        # Reset rng seed again (due to inconsistency in solver rng calls.)
-                        rng = set_seed(cfg.seed + trial)
+                        # Time affinity-matrix construction.
                         t1 = time.perf_counter()
-                        inliers, soln = run_data_association(
-                            data_association, method, src_t, trg_t, x_init=x_init
-                        )
+                        data_association.set_up_affinity_matrix(src_t, trg_t)
                         t2 = time.perf_counter()
-                        t_solver = t2 - t1
-                        # if enabled, also get the globally optimal solution by solving the SDP 
-                        inliers_global, soln_global = None, None
-                        if cfg.get_global_solution:
-                            inliers_global, soln_global = data_association.run_sdp()
-                        
-                        # Optionally certify the data association solution and time it.
-                        data_association_certified = False
-                        t_certify = np.nan
-                        num_iter_cert = None
-                        if cfg.data_association_config.certify and soln is not None:
-                            cert_result_da = data_association.certify_solution(soln)
-                            t_certify = cert_result_da.solver_time
-                            num_iter_cert = cert_result_da.num_iterations
-                            data_association_certified = cert_result_da.certified
-
-                        # Precision / recall of the selected associations.
-                        Ain = A[inliers.cpu().numpy()]
-                        precision, recall = get_precision_recall(Ain, Agt)
-                        
-                        # Registration
-                
-                        if cfg.registration and inliers.sum() > 0:
-                            # Restrict measurements to inliers and estimate the transformation using SVD
-                            src_inliers = src_t[:, inliers]
-                            trg_inliers = trg_t[:, inliers]
-                            T = estimate_pose_svd(src_inliers, trg_inliers)
-                            # Compute the relative error between the estimated transformation and the ground truth
-                            T_trg_src = Transformation(T_ba=T.cpu().numpy())
-                            T_trg_src_gt = Transformation(T_ba=T_trg_src_gt_np)
-                            T_error = T_trg_src.inverse() * T_trg_src_gt
-                            rel_trans_error = np.linalg.norm(T_error.r_ab_inb()) / np.linalg.norm(T_trg_src_gt.r_ab_inb())
-                            theta_error = np.linalg.norm(Rotation.from_matrix(T_error.matrix()[:3,:3]).as_rotvec())
-                            rel_rot_error = theta_error / np.linalg.norm(Rotation.from_matrix(T_trg_src_gt.matrix()[:3,:3]).as_rotvec())
+                        t_affinity = t2 - t1
+                        # Initialization for CLIPPER
+                        if cfg.poor_initialization:
+                            n_outlier = len(A) - len(Agt)
+                            x_init = np.zeros(src_t.shape[1], dtype=np.float64)
+                            x_init[:n_outlier] = 1.0
                         else:
-                            rel_trans_error = None
-                            rel_rot_error = None
-
-                        # Store the results
-                        output_data.append(
-                            dict(
-                                method=method.value,
-                                outlier_ratio=rho,
-                                num_assoc=m,
-                                trial=trial,
-                                t_affinity=t_affinity,
-                                t_solver=t_solver,
-                                t_certify=t_certify,
-                                cert_da=data_association_certified,
-                                precision=precision,
-                                recall=recall,
-                                num_inliers=int(inliers.sum().item()),
-                                obj_value=data_association.obj_value,
-                                num_constraints=data_association.num_constraints,
-                                num_iter_cert=num_iter_cert,
-                                rel_rot_error=rel_rot_error,
-                                rel_trans_error=rel_trans_error,
+                            x_init = None
+                        # Run each configured solver (CLIPPER, PMC, SDP or RANSAC) on
+                        # the same problem instance, reusing the cached affinity matrix.
+                        inliers_list = []
+                        for method in cfg.methods:
+                            # Reset rng seed again (due to inconsistency in solver rng calls.)
+                            rng = set_seed(cfg.seed + trial)
+                            t1 = time.perf_counter()
+                            inliers, soln = run_data_association(
+                                data_association, method, src_t, trg_t, x_init=x_init
                             )
-                        )
-                        inliers_list.append(inliers)
-                    pbar.update(1)
+                            t2 = time.perf_counter()
+                            t_solver = t2 - t1
+                            # if enabled, also get the globally optimal solution by solving the SDP
+                            inliers_global, soln_global = None, None
+                            if cfg.get_global_solution:
+                                inliers_global, soln_global = data_association.run_sdp()
+
+                            # Optionally certify the data association solution and time it.
+                            data_association_certified = False
+                            t_certify = np.nan
+                            num_iter_cert = None
+                            if cfg.data_association_config.certify and soln is not None:
+                                cert_result_da = data_association.certify_solution(soln)
+                                t_certify = cert_result_da.solver_time
+                                num_iter_cert = cert_result_da.num_iterations
+                                data_association_certified = cert_result_da.certified
+
+                            # Precision / recall of the selected associations.
+                            Ain = A[inliers.cpu().numpy()]
+                            precision, recall = get_precision_recall(Ain, Agt)
+
+                            # Registration
+                            if cfg.registration and inliers.sum() > 0:
+                                # Restrict measurements to inliers and estimate the transformation using SVD
+                                src_inliers = src_t[:, inliers]
+                                trg_inliers = trg_t[:, inliers]
+                                T = estimate_pose_svd(src_inliers, trg_inliers)
+                                # Compute the relative error between the estimated transformation and the ground truth
+                                T_trg_src = Transformation(T_ba=T.cpu().numpy())
+                                T_trg_src_gt = Transformation(T_ba=T_trg_src_gt_np)
+                                T_error = T_trg_src.inverse() * T_trg_src_gt
+                                rel_trans_error = np.linalg.norm(
+                                    T_error.r_ab_inb()
+                                ) / np.linalg.norm(T_trg_src_gt.r_ab_inb())
+                                theta_error = np.linalg.norm(
+                                    Rotation.from_matrix(
+                                        T_error.matrix()[:3, :3]
+                                    ).as_rotvec()
+                                )
+                                rel_rot_error = theta_error / np.linalg.norm(
+                                    Rotation.from_matrix(
+                                        T_trg_src_gt.matrix()[:3, :3]
+                                    ).as_rotvec()
+                                )
+                            else:
+                                rel_trans_error = None
+                                rel_rot_error = None
+
+                            # Store the results
+                            output_data.append(
+                                dict(
+                                    method=method.value,
+                                    outlier_ratio=rho,
+                                    num_assoc=m,
+                                    trial=trial,
+                                    t_affinity=t_affinity,
+                                    t_solver=t_solver,
+                                    t_certify=t_certify,
+                                    cert_da=data_association_certified,
+                                    precision=precision,
+                                    recall=recall,
+                                    num_inliers=int(inliers.sum().item()),
+                                    obj_value=data_association.obj_value,
+                                    num_constraints=data_association.num_constraints,
+                                    num_iter_cert=num_iter_cert,
+                                    rel_rot_error=rel_rot_error,
+                                    rel_trans_error=rel_trans_error,
+                                    inv_mult=invariant_mult,
+                                )
+                            )
+                            inliers_list.append(inliers)
+                        pbar.update(1)
 
     df = pd.DataFrame(output_data)
 
@@ -712,7 +758,12 @@ def run_experiment(cfg: BunnyExperimentConfig):
         num_outliers = 0
     if cfg.plot:
         plot_associations(
-            src_t, trg_t, inliers, inliers_global, num_outliers, data_association_certified
+            src_t,
+            trg_t,
+            inliers,
+            inliers_global,
+            num_outliers,
+            data_association_certified,
         )
 
 
