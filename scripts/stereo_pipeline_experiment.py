@@ -14,6 +14,8 @@ from pylgmath import Transformation
 from scipy.spatial.transform import Rotation
 from omegaconf import OmegaConf
 import pandas as pd
+import matplotlib.pyplot as plt
+from lightglue import viz2d
 
 # Ensure plotting uses the desired X display (useful in headless CI/devcontainer)
 os.environ["DISPLAY"] = ":32"
@@ -56,6 +58,9 @@ class StereoPipelineExperimentConfig:
     shuffle: bool = False
     # Number of samples to use for the experiment. If None, use the entire dataset.
     num_samples: int | None = None
+    # Plotting options for visualizing the results
+    plot: bool = False
+
 
 def load_experiment_config(config_path: Path) -> StereoPipelineExperimentConfig:
     # Start with defaults from dataclass
@@ -109,6 +114,8 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
     pipeline_cfg = load_pipeline_overrides(pipeline_cfg, cfg.override_path)
     # Get stereo camera config from dataset
     pipeline_cfg.stereo_camera_config = euroc_preprocess.get_stereo_cam_config()
+    # If plotting then set debug mode
+    pipeline_cfg.debug = cfg.plot
     # Initialize the stereo pipeline
     pipeline = StereoPipeline(pipeline_cfg)
     # Restrict to bounds if specified
@@ -156,26 +163,54 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         # Check that the estimated transform is close to the ground truth
         T_src_trg = Transformation(T_ba=output.relative_transform)
         T_src_trg_gt = Transformation(T_ba=T_src_trg_gt)
-        # Relative Rotation Error in radians
-        rot_error = np.arccos((np.trace(T_src_trg_gt.C_ba().T @ T_src_trg.C_ba())-1)/2)
-        trans_error = np.linalg.norm(T_src_trg_gt.r_ab_inb() - T_src_trg.r_ab_inb())
-        rot_delta = np.arccos((np.trace(T_src_trg_gt.C_ba())-1)/2)
-        trans_delta = np.linalg.norm(T_src_trg_gt.r_ab_inb())
+
         # Store results
         output_data.append(
             dict(
                 index=idx,
                 timestep=timestep,
                 time_interval=time_interval,
-                trans_error=trans_error,
-                rot_error=rot_error,
-                trans_delta=trans_delta,
-                rot_delta=rot_delta,
+                xi_est=T_src_trg.vec(),
+                xi_gt=T_src_trg_gt.vec(),
                 cert_da=output.data_association_certified,
                 cert_reg=output.registration_certified,
                 num_inliers=output.num_inliers,
             )
         )
+
+    if cfg.plot:
+        # Retrieve 3D keypoints and inliers/outliers
+        kpt_3D_0 = output.debug_info.keypoints_3D[0].cpu().numpy()
+        kpt_3D_1 = output.debug_info.keypoints_3D[1].cpu().numpy()
+        inliers = output.debug_info.inliers.cpu().numpy()
+        # Transform kpt_3D_1 to the frame of kpt_3D_0 using the estimated transform
+        kpt_3D_1_in_0 = T_src_trg.matrix() @ kpt_3D_1  # (4, N)
+
+        # Plot 2D Matches
+        plot_outliers = True
+        axes = viz2d.plot_images([img0_L, img1_L])
+        keypoints_2D = output.debug_info.keypoints_2D
+        viz2d.plot_matches(keypoints_2D[0].T, keypoints_2D[1].T, color="lime", lw=0.2)
+        # Plot 3D Matches with no correction
+        fig, ax = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={"projection": "3d"})
+        plot_pointclouds(
+            kpt_3D_0,
+            kpt_3D_1,
+            inliers,
+            ax[0],
+            title="3D Keypoints (No Correction)",
+            plot_outliers=plot_outliers,
+        )
+        # Plot 3D Matches with correction
+        plot_pointclouds(
+            kpt_3D_0,
+            kpt_3D_1_in_0,
+            inliers,
+            ax[1],
+            title="3D Keypoints (Transformed Frame 1 to Frame 0)",
+            plot_outliers=plot_outliers,
+        )
+        plt.show()
 
     # Convert data to dataframe
     df = pd.DataFrame(output_data)
@@ -185,10 +220,83 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         run_dir.mkdir(parents=True, exist_ok=True)
         df.to_csv(run_dir / "results.csv", index=False)
         OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
-        OmegaConf.save(OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml")
+        OmegaConf.save(
+            OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml"
+        )
     else:
         print("Experiment results:")
         print(df)
+
+
+def plot_pointclouds(
+    kpt_3D_0, kpt_3D_2, inliers, ax=None, title="3D Keypoints", plot_outliers=False
+):
+    if ax is None:
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection="3d")
+
+    outlier_mask = ~inliers
+    ax.scatter(
+        kpt_3D_0[0, inliers],
+        kpt_3D_0[1, inliers],
+        kpt_3D_0[2, inliers],
+        c="blue",
+        s=3,
+        label="frame 0",
+        alpha=0.7,
+    )
+
+    ax.scatter(
+        kpt_3D_2[0, inliers],
+        kpt_3D_2[1, inliers],
+        kpt_3D_2[2, inliers],
+        c="red",
+        s=3,
+        alpha=0.7,
+        label="inliers (frame 1)",
+    )
+    if plot_outliers:
+        ax.scatter(
+            kpt_3D_0[0, outlier_mask],
+            kpt_3D_0[1, outlier_mask],
+            kpt_3D_0[2, outlier_mask],
+            c="red",
+            s=3,
+            alpha=0.7,
+            label="outliers (frame 1)",
+        )
+        ax.scatter(
+            kpt_3D_2[0, outlier_mask],
+            kpt_3D_2[1, outlier_mask],
+            kpt_3D_2[2, outlier_mask],
+            c="red",
+            s=3,
+            alpha=0.7,
+            label="outliers (frame 1)",
+        )
+    # Draw lines between matches.
+    for i in range(kpt_3D_0.shape[1]):
+        line_color = "lime" if inliers[i] else "red"
+        linewidth = 1.0 if inliers[i] else 0.5
+        if inliers[i] or plot_outliers:
+            ax.plot(
+                [kpt_3D_0[0, i], kpt_3D_2[0, i]],
+                [kpt_3D_0[1, i], kpt_3D_2[1, i]],
+                [kpt_3D_0[2, i], kpt_3D_2[2, i]],
+                c=line_color,
+                linewidth=linewidth,
+                alpha=0.5,
+            )
+
+    ax.set_title(title)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+    ax.set_aspect("equal", adjustable="box")
+    ax.legend()
+
+    return ax
+
 
 if __name__ == "__main__":
     import argparse

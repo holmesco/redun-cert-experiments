@@ -81,7 +81,7 @@ class BunnyExperimentConfig:
     # --- Poor initialization for CLIPPER ---
     # If True, initialize CLIPPER with a poor initial solution (all outliers).
     poor_initialization: bool = False
-    
+
     # --- Synthetic noise parameters (bounded normal noise) ---
     noise_sigma: float = 0.01
     noise_beta: float = 5.54 * 0.01
@@ -94,10 +94,9 @@ class BunnyExperimentConfig:
     rotation: List[float] | None = None
     # Adversarial transformation applied to the bunny to generate the target point cloud.
     # If None, random translation in [-1.0, 1.0]^3
-    translation_adv: List[float] | None = None
+    translation_adv: List[List[float]] | None = None
     # If None, random rotation
-    rotation_adv: List[float] | None = None
-    
+    rotation_adv: List[List[float]] | None = None
 
     # ---  sweep parameters ---
     # Numbers of putative associations to sweep over.
@@ -294,7 +293,7 @@ def run_data_association(
     method: DataAssociationMethod,
     kpt_3D_src: torch.Tensor,
     kpt_3D_trg: torch.Tensor,
-    x_init: Optional[np.ndarray] = None
+    x_init: Optional[np.ndarray] = None,
 ) -> Tuple[torch.Tensor, np.ndarray | torch.Tensor]:
     """Dispatch to the configured data association solver.
 
@@ -389,20 +388,37 @@ def adversarial_setup(
     rho: float,
     rng: np.random.Generator,
 ) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray, np.ndarray]:
-    """Generate a single CLIPPER-benchmark problem instance.
+    """Generate a single adversarial problem instance.
 
     Builds a noisy, randomly transformed copy of the bunny together with ``m``
-    putative correspondences at outlier ratio ``rho`` (a Python port of the
-    CLIPPER C++ benchmark).
+    putative correspondences at outlier ratio ``rho``. The outliers are split
+    (roughly evenly) across one or more *adversarial* point clouds, each with its
+    own transformation: the number of adversarial clouds is given by
+    ``len(cfg.translation_adv)`` (defaulting to a single random adversarial
+    transform when ``translation_adv``/``rotation_adv`` are unset).
 
-    Returns ``(src_t, trg_t, A, Agt)`` where ``src_t``/``trg_t`` are the
+    Returns ``(src_t, trg_t, A, Agt, T_10)`` where ``src_t``/``trg_t`` are the
     homogeneous keypoint tensors fed to the solver, ``A`` is the (m, 2) putative
-    association set and ``Agt`` is the ground-truth inlier subset.
+    association set, ``Agt`` is the ground-truth inlier subset and ``T_10`` is the
+    true transformation.
     """
     # Generate true transformation (R,t) for the bunny.
     T_10 = get_transformation(cfg.rotation, cfg.translation, rng)
-    # Generate adversarial transformation (R,t) for the bunny.
-    T_10_adv = get_transformation(cfg.rotation_adv, cfg.translation_adv, rng)
+    # Generate an adversarial transformation (R,t) per adversarial point cloud.
+    if cfg.translation_adv is not None:
+        num_adv = len(cfg.translation_adv)
+    elif cfg.rotation_adv is not None:
+        num_adv = len(cfg.rotation_adv)
+    else:
+        num_adv = 1
+    T_10_adv = [
+        get_transformation(
+            cfg.rotation_adv[i] if cfg.rotation_adv is not None else None,
+            cfg.translation_adv[i] if cfg.translation_adv is not None else None,
+            rng,
+        )
+        for i in range(num_adv)
+    ]
 
     # Noisy copy of the bunny and its ground-truth associations.
     pcd1 = make_noisy(pcd0, cfg.noise_sigma, cfg.noise_beta, rng)
@@ -412,18 +428,25 @@ def adversarial_setup(
     # Number of correspondences to draw from the good set, and adversarial set.
     ni = int(round(m * (1.0 - rho)))  # number of inliers in final set
     no = m - ni  # number of outliers in final set
-    
+
     # Synthetic putative correspondences with outlier ratio rho.
+    rng = set_seed(cfg.seed)
     Ai, Agt = generate_synthetic_correspondences(pcd0, pcd1, Agt0, ni, 0.0, rng)
+    rng = set_seed(cfg.seed)
     Ao, _ = generate_synthetic_correspondences(pcd0, pcd1, Agt0, no, 0.0, rng)
     A = np.vstack((Ao, Ai))
     # map into keypoints
     src, trg_aligned = _associations_to_keypoints(pcd0, pcd1, A)
-    # Apply transformations
-    trg1 = T_10_adv @ trg_aligned[:, :Ao.shape[0]]  # Apply adversarial transformation to outliers
-    trg2 = T_10 @ trg_aligned[:, Ao.shape[0]:]  # Apply true transformation to inliers
-    trg = torch.cat((trg1, trg2), dim=1)
-    
+    # Apply each adversarial transformation to its share of the outliers.
+    outlier_kpts = trg_aligned[:, : Ao.shape[0]]
+    outlier_splits = np.array_split(np.arange(Ao.shape[0]), num_adv)
+    trg_outliers = [
+        T_10_adv[i] @ outlier_kpts[:, split] for i, split in enumerate(outlier_splits)
+    ]
+    # Apply the true transformation to the inliers.
+    trg_inliers = T_10 @ trg_aligned[:, Ao.shape[0] :]
+    trg = torch.cat((*trg_outliers, trg_inliers), dim=1)
+
     return src, trg, A, Agt, T_10
 
 
@@ -453,12 +476,29 @@ def plot_associations(
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
+    # Fill the figure: remove the default subplot padding and let the 3D axes
+    # occupy the entire figure area.
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
     # Point clouds: source (red) and target (blue).
     ax.scatter(src[:, 0], src[:, 1], src[:, 2], c="magenta", s=5, label="source")
     if num_outliers > 0:
-        ax.scatter(trg[:num_outliers, 0], trg[:num_outliers, 1], trg[:num_outliers, 2], c="red", s=5, label="target (outliers)")
-        ax.scatter(trg[num_outliers:, 0], trg[num_outliers:, 1], trg[num_outliers:, 2], c="blue", s=5, label="target (inliers)")
+        ax.scatter(
+            trg[:num_outliers, 0],
+            trg[:num_outliers, 1],
+            trg[:num_outliers, 2],
+            c="red",
+            s=5,
+            label="target (outliers)",
+        )
+        ax.scatter(
+            trg[num_outliers:, 0],
+            trg[num_outliers:, 1],
+            trg[num_outliers:, 2],
+            c="blue",
+            s=5,
+            label="target (inliers)",
+        )
     # Association lines: green for inliers, red for outliers, alpha 0.5.
     for i in range(src.shape[0]):
         color = "green" if is_inlier[i] else "red"
@@ -475,7 +515,11 @@ def plot_associations(
     # ax.set_xlabel("X")
     # ax.set_ylabel("Y")
     # ax.set_zlabel("Z")
+    # Zoom in so the point cloud fills the axes (reduces the whitespace that
+    # matplotlib leaves around 3D data).
     ax.set_aspect("equal")
+    ax.margins(0)
+    ax.set_position([0, 0, 1, 1])
     ax.grid(False)
     # No Background
     ax.set_facecolor("none")
@@ -488,11 +532,12 @@ def plot_associations(
 
 
 def set_seed(seed: int) -> np.random.Generator:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        rng = np.random.default_rng(seed)
-        return rng
-    
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    return rng
+
+
 def run_experiment(cfg: BunnyExperimentConfig):
     rng = set_seed(cfg.seed)
     # Seed everything for reproducibility.
@@ -575,14 +620,14 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                 precision=precision,
                                 recall=recall,
                                 num_inliers=int(inliers.sum().item()),
-                                obj_value = data_association.obj_value,
-                                num_constraints = data_association.num_constraints,
-                                num_iter_cert = num_iter_cert,
+                                obj_value=data_association.obj_value,
+                                num_constraints=data_association.num_constraints,
+                                num_iter_cert=num_iter_cert,
                             )
                         )
                         inliers_list.append(inliers)
                     pbar.update(1)
-                    
+
     df = pd.DataFrame(output_data)
 
     if cfg.save_results:
@@ -607,7 +652,9 @@ def run_experiment(cfg: BunnyExperimentConfig):
     else:
         num_outliers = 0
     if cfg.plot:
-        plot_associations(src_t, trg_t, inliers, num_outliers, data_association_certified)
+        plot_associations(
+            src_t, trg_t, inliers, num_outliers, data_association_certified
+        )
 
 
 if __name__ == "__main__":
