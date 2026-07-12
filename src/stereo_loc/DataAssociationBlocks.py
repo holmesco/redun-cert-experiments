@@ -106,13 +106,23 @@ class DataAssociationBlock:
         self.num_constraints: int | None = None
         # Track cost of the solution for certification
         self.obj_value: float | None = None
-        
-    def set_clipper(self, invariant_sigma: float = None, invariant_epsilon: float = None):
+
+    def set_clipper(
+        self, invariant_sigma: float = None, invariant_epsilon: float = None
+    ):
         """Create a CLIPPER instance for data association."""
         # Set up invariant
         iparams = clipperpy.invariants.EuclideanDistanceParams()
-        iparams.sigma = invariant_sigma if invariant_sigma is not None else self.config.invariant_sigma
-        iparams.epsilon = invariant_epsilon if invariant_epsilon is not None else self.config.invariant_epsilon
+        iparams.sigma = (
+            invariant_sigma
+            if invariant_sigma is not None
+            else self.config.invariant_sigma
+        )
+        iparams.epsilon = (
+            invariant_epsilon
+            if invariant_epsilon is not None
+            else self.config.invariant_epsilon
+        )
         invariant = clipperpy.invariants.EuclideanDistance(iparams)
         # Define rounding strategy
         params = clipperpy.Params()
@@ -123,10 +133,9 @@ class DataAssociationBlock:
         self.M: np.ndarray | None = None
         self.M_torch: torch.Tensor | None = None
 
-    
     def certify_solution(
         self,
-        x: np.ndarray | torch.Tensor,
+        U: np.ndarray | torch.Tensor,
         cost: float = None,
         check_constraints: bool = False,
     ) -> AnalyticCenterResult:
@@ -146,8 +155,8 @@ class DataAssociationBlock:
         result : AnalyticCenterResult
             Result of the certification process.
         """
-        if isinstance(x, torch.Tensor):
-            x = x.detach().cpu().numpy()
+        if isinstance(U, torch.Tensor):
+            U = U.detach().cpu().numpy()
 
         # Retrieve the affinity matrix from the last forward pass
         M = self.get_affinity()
@@ -156,10 +165,13 @@ class DataAssociationBlock:
             # Get the constraints for the max clique problem
             constraints, values = get_maxclique_sdp_constraints(M)
             for i, (A, b) in enumerate(zip(constraints, values)):
-                assert np.abs(x.T @ A @ x - b) < 1e-10, f"Constraint {i} violated!"
+                assert np.abs(U.T @ A @ U - b) < 1e-10, f"Constraint {i} violated!"
         # Get the cost of the solution if not provided
         if cost is None:
-            cost = -(x.T @ M @ x).item()
+            if len(U.shape) == 1:
+                cost = -(U.T @ M @ U)
+            else:
+                cost = -(U.T @ M @ U).trace()
         # Set up central path certifier
         ac_params = self.config.ac_params.to_cpp_class()
         certifier = MaxCliqueCertifier(-M, cost, ac_params)
@@ -167,7 +179,7 @@ class DataAssociationBlock:
         self.num_constraints = certifier.m
         self.obj_value = cost
         # Certify the solution
-        result = certifier.certify(x)
+        result = certifier.certify(U)
         return result
 
     def set_up_affinity_matrix(self, kpt_3D_src, kpt_3D_trg):

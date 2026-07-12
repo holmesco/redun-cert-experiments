@@ -38,7 +38,7 @@ from stereo_loc.DataAssociationBlocks import (
 )
 from stereo_loc.PointCloudRegistrationBlock import estimate_pose_svd
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class ExperimentType(Enum):
@@ -611,7 +611,6 @@ def run_experiment(cfg: BunnyExperimentConfig):
         len(cfg.outlier_ratios)
         * len(cfg.num_assocs)
         * cfg.num_trials
-        * len(cfg.methods)
         * len(invariant_mults)
     )
     index = 0
@@ -678,11 +677,18 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                 data_association_certified = cert_result_da.certified
 
                             # Precision / recall of the selected associations.
-                            Ain = A[inliers.cpu().numpy()]
-                            precision, recall = get_precision_recall(Ain, Agt)
+                            if inliers is not None:
+                                Ain = A[inliers.cpu().numpy()]
+                                precision, recall = get_precision_recall(Ain, Agt)
+                            else:
+                                precision, recall = None, None
 
                             # Registration
-                            if cfg.registration and inliers.sum() > 0:
+                            if (
+                                cfg.registration
+                                and inliers is not None
+                                and inliers.sum() > 0
+                            ):
                                 # Restrict measurements to inliers and estimate the transformation using SVD
                                 src_inliers = src_t[:, inliers]
                                 trg_inliers = trg_t[:, inliers]
@@ -721,7 +727,11 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                     cert_da=data_association_certified,
                                     precision=precision,
                                     recall=recall,
-                                    num_inliers=int(inliers.sum().item()),
+                                    num_inliers=(
+                                        int(inliers.sum().item())
+                                        if inliers is not None
+                                        else None
+                                    ),
                                     obj_value=data_association.obj_value,
                                     num_constraints=data_association.num_constraints,
                                     num_iter_cert=num_iter_cert,

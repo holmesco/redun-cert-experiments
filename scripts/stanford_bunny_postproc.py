@@ -76,15 +76,12 @@ def load_results(
 
 
 def load_benchmark_sweep_low(data_dir: Path = DATA_DIR) -> pd.DataFrame:
-    """Load the ``benchmark_sweep_low`` experiment results.
-
-    """
+    """Load the ``benchmark_sweep_low`` experiment results."""
     # Load both the original and SDP-augmented runs and concatenate them.
     df = load_results("benchmark_sweep_low", data_dir=data_dir)
     df_sdp = load_results("benchmark_sweep_low_sdp", data_dir=data_dir)
     df = pd.concat([df, df_sdp], ignore_index=True)
     return df
-    
 
 
 def cert_da_percent_by_method(df: pd.DataFrame) -> pd.Series:
@@ -129,6 +126,7 @@ def find_result_csvs(
                 csv_paths.append(csv_path)
     return csv_paths
 
+
 def _grouped_boxplot(ax, x_col, x_categories, series, x_labels=None, box_width=0.8):
     """Draw side-by-side box plots of several series within each x category.
 
@@ -171,8 +169,7 @@ def _grouped_boxplot(ax, x_col, x_categories, series, x_labels=None, box_width=0
     ax.grid(True, axis="y", which="both", alpha=0.3)
     # Legend keyed on box color.
     handles = [
-        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6)
-        for _, color, _, _ in series
+        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _, _ in series
     ]
     ax.legend(handles, [label for label, _, _, _ in series])
 
@@ -220,7 +217,13 @@ def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
             medianprops=dict(color="black"),
             whiskerprops=dict(color=color),
             capprops=dict(color=color),
-            flierprops=dict(marker=".", markersize=3, markerfacecolor=color, markeredgecolor=color, alpha=0.6),
+            flierprops=dict(
+                marker=".",
+                markersize=3,
+                markerfacecolor=color,
+                markeredgecolor=color,
+                alpha=0.6,
+            ),
         )
 
     ax.set_xscale("log")
@@ -282,7 +285,7 @@ def plot_t_certify_boxplots(
 
     Returns the created ``(fig, axes)``.
     """
-    
+
     fig, (ax_assoc, ax_constr) = plt.subplots(2, 1, figsize=(12, 11))
 
     assoc_cats = sorted(df["num_assoc"].unique())
@@ -340,14 +343,15 @@ def certifier_confusion(
     n_methods = df["method"].nunique()
     df = df.groupby(keys).filter(lambda g: g["method"].nunique() == n_methods)
 
-    ref = (
-        df[df["method"] == reference_method][keys + ["obj_value"]]
-        .rename(columns={"obj_value": "obj_value_ref"})
+    ref = df[df["method"] == reference_method][keys + ["obj_value"]].rename(
+        columns={"obj_value": "obj_value_ref"}
     )
     merged = df.merge(ref, on=keys, how="inner")
 
-    merged["gap"] = (merged["obj_value"] - merged["obj_value_ref"]) / (merged["obj_value_ref"]+1).abs()
-    
+    merged["gap"] = (merged["obj_value"] - merged["obj_value_ref"]) / (
+        merged["obj_value_ref"] + 1
+    ).abs()
+
     merged["gt_cert"] = merged["gap"] < threshold
     pred = merged["cert_da"].astype(bool)
     gt = merged["gt_cert"]
@@ -363,78 +367,114 @@ def certifier_confusion(
 
 
 def plot_invariant_sweep_boxplots(
-    df: pd.DataFrame,
+    df_clipper: pd.DataFrame,
+    df_sdp: Optional[pd.DataFrame] = None,
     save_path: Optional[Path] = None,
     show: bool = True,
 ):
     """Box-plot version of :func:`plot_invariant_sweep`.
 
-    Produces a two-panel figure (shared ``inv_mult`` x-axis). The invariant
+    Produces a three-panel figure (shared ``inv_mult`` x-axis). The invariant
     multiplier is treated as a continuous variable: boxes sit at their actual
-    value on a log-scaled x-axis with a tick at every decade. The top panel shows
-    side-by-side box plots of the relative translation and rotation error within
-    each invariant multiplier (log y-axis). The bottom panel shows a box plot of
-    the percent inliers found per invariant multiplier, overlaid with a line for
-    the percent of trials whose data association was certified (``cert_da``),
-    which is boolean and so has no meaningful distribution per group.
+    value on a log-scaled x-axis with a tick at every decade. All box plots show
+    only the CLIPPER method (``df_clipper``). The top panel shows side-by-side box
+    plots of the relative translation and rotation error within each invariant
+    multiplier, split by whether the trial's data association was certified
+    (``cert_da``), on a log y-axis. The middle panel shows the percent of CLIPPER
+    trials certified, overlaid with the SDP solve-success rate (fraction of SDP
+    trials with a valid ``num_inliers``) from ``df_sdp``. The bottom panel shows
+    box plots of the percent inliers found per invariant multiplier.
 
     Returns the created ``(fig, axes)``.
     """
-    cats = sorted(df["inv_mult"].unique())
+    cats = sorted(df_clipper["inv_mult"].unique())
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
     ax_err, ax_cert, ax_corres = axes
 
     # --- Top panel: registration error distributions (log scale) ---
+    # Boxes are split by whether the trial's data association was certified.
+    def _err_by_cert(col, certified):
+        mask = df_clipper["cert_da"] if certified else ~df_clipper["cert_da"]
+        return [
+            df_clipper.loc[(df_clipper["inv_mult"] == c) & mask, col].values
+            for c in cats
+        ]
+
     err_series = [
-        (
-            "Trans.",
-            "#4C72B0",
-            [df.loc[df["inv_mult"] == c, "rel_trans_error"].values for c in cats],
-        ),
-        (
-            "Rot.",
-            "#DD8452",
-            [df.loc[df["inv_mult"] == c, "rel_rot_error"].values for c in cats],
-        ),
+        ("Trans. (Cert.)", "#12428A", _err_by_cert("rel_trans_error", True)),
+        ("Trans. (No Cert.)", "#20C0D0", _err_by_cert("rel_trans_error", False)),
+        ("Rot. (Cert.)", "#C0202B", _err_by_cert("rel_rot_error", True)),
+        ("Rot. (No Cert.)", "#F58BB0", _err_by_cert("rel_rot_error", False)),
     ]
     _log_grouped_boxplot(ax_err, cats, err_series)
     ax_err.set_yscale("log")
     ax_err.set_ylabel("Relative Registration Error (%)")
     ax_err.grid(True, which="both", alpha=0.3)
     err_handles = [
-        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6)
-        for _, color, _ in err_series
+        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _ in err_series
     ]
     ax_err.legend(err_handles, [label for label, _, _ in err_series])
-    
+
     # --- Middle panel: percent of trials certified (boolean) ---
-    cert_pct = df.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
-    ax_cert.plot(cats, cert_pct.values, "-", color="#0C0304")
-    ax_cert.set_ylabel("Percent Trials Certified (%)")
+    cert_pct = df_clipper.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
+    ax_cert.plot(cats, cert_pct.values, "-", color="#0C0304", label="Clipper Certified")
+    # SDP rank-tight rate: fraction of SDP trials rank tight solution, per invariant multiplier.
+    if df_sdp is not None and len(df_sdp):
+        rank_tight = (
+            df_sdp.groupby("inv_mult")["num_inliers"]
+            .apply(lambda s: s.notna().mean() * 100.0)
+            .reindex(cats)
+        )
+        ax_cert.plot(
+            cats, rank_tight.values, "-", color="#8172B3", label="Rank-Tight Relaxation"
+        )
+
+    ax_cert.set_ylabel("Percent (%)")
     # ax_cert.set_ylim(0, 101)
     ax_cert.grid(True, which="both", alpha=0.3)
+    ax_cert.legend()
 
     # --- Bottom panel: percent inliers distribution + certified-trial line ---
+    # Two boxes per inv_mult: the CLIPPER and SDP accepted-correspondence rates.
     inlier_series = [
         (
-            "Accptd. Corresp.",
+            "Accptd. Corresp. (Clipper)",
             "#55A868",
-            [df.loc[df["inv_mult"] == c, "percent_inliers"].values for c in cats],
-        )
+            [
+                df_clipper.loc[df_clipper["inv_mult"] == c, "percent_inliers"].values
+                for c in cats
+            ],
+        ),
+        (
+            "Accptd. Corresp. (SDP)",
+            "#2E6B45",
+            [
+                df_sdp.loc[df_sdp["inv_mult"] == c, "percent_inliers"].values
+                for c in cats
+            ]
+            if df_sdp is not None
+            else [np.array([]) for _ in cats],
+        ),
     ]
     recall_series = [
         (
             "Recall",
             "#C9261B",
-            [df.loc[df["inv_mult"] == c, "recall"].values*100 for c in cats],
+            [
+                df_clipper.loc[df_clipper["inv_mult"] == c, "recall"].values * 100
+                for c in cats
+            ],
         )
     ]
     precision_series = [
         (
             "Precision",
             "#2522C9",
-            [df.loc[df["inv_mult"] == c, "precision"].values*100 for c in cats],
+            [
+                df_clipper.loc[df_clipper["inv_mult"] == c, "precision"].values * 100
+                for c in cats
+            ],
         )
     ]
     _log_grouped_boxplot(ax_corres, cats, inlier_series)
@@ -444,17 +484,29 @@ def plot_invariant_sweep_boxplots(
     ax_corres.set_ylim(0, 101)
     ax_corres.grid(True, which="both", alpha=0.3)
     # reference line for number of ground-truth correspondences
-    ax_corres.axhline(y=50, color='grey', linestyle='--', label='Ground Truth Correspondences')
-    ax_corres.text(x=0.007, y=51, s="Percent True \nCorrespondences", color='grey', va='bottom')
-
+    ax_corres.axhline(
+        y=50, color="grey", linestyle="--", label="Ground Truth Correspondences"
+    )
+    ax_corres.text(
+        x=0.007, y=51, s="Percent True \nCorrespondences", color="grey", va="bottom"
+    )
 
     # Reconcile the box-plot legend with the certified-trials line.
     handles = [
         plt.Line2D([0], [0], color="#55A868", lw=6, alpha=0.6),
+        plt.Line2D([0], [0], color="#2E6B45", lw=6, alpha=0.6),
         plt.Line2D([0], [0], color="#C9261B", lw=6, alpha=0.6),
         plt.Line2D([0], [0], color="#2522C9", lw=6, alpha=0.6),
     ]
-    ax_corres.legend(handles, ["Accptd. Corresp.", "Recall", "Precision"])
+    ax_corres.legend(
+        handles,
+        [
+            "Accptd. Corresp. (Clipper)",
+            "Accptd. Corresp. (SDP)",
+            "Recall",
+            "Precision",
+        ],
+    )
     ax_corres.set_xlabel("Graph Noise Parameter / Actual Noise Level")
 
     fig.tight_layout()
@@ -469,22 +521,30 @@ def plot_invariant_sweep_boxplots(
 
 
 def invariant_sweep_results():
-    df = load_results("invariant_sweep", timestamp = "20260707T2030")
+    df = load_results("invariant_sweep")
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
-    df['percent_inliers'] = df['num_inliers'] / df['num_assoc'] * 100.0
+    df["percent_inliers"] = df["num_inliers"] / df["num_assoc"] * 100.0
 
-    summary = df.groupby("inv_mult").agg(
+    # The CSV now contains both the CLIPPER and SDP methods; split them.
+    df_clipper = df[df["method"] == "CLIPPER"]
+    df_sdp = df[df["method"] == "SDP"]
+
+    summary = df_clipper.groupby("inv_mult").agg(
         rel_trans_error=("rel_trans_error", "mean"),
         rel_rot_error=("rel_rot_error", "mean"),
         cert_da_pct=("cert_da", lambda s: s.mean() * 100.0),
         num_inliers=("percent_inliers", "mean"),
     )
-    print("\nMetrics by invariant multiplier (mean across trials):")
+    print("\nCLIPPER: Metrics by invariant multiplier (mean across trials):")
     print(summary.to_string())
 
     plot_invariant_sweep_boxplots(
-        df,
-        save_path=DATA_DIR / "invariant_sweep" / "figures" / "invariant_sweep_boxplots.png",
+        df_clipper,
+        df_sdp,
+        save_path=DATA_DIR
+        / "invariant_sweep"
+        / "figures"
+        / "invariant_sweep_boxplots_clipper.png",
     )
 
 
@@ -498,18 +558,17 @@ def benchmark_sweep_low_results():
         print(f"  {method:>8}: {pct:5.1f}%")
 
     threshold = 1e-2
-    print(
-        f"\nCertifier confusion vs. SDP ground truth (gap threshold {threshold:g}):"
-    )
+    print(f"\nCertifier confusion vs. SDP ground truth (gap threshold {threshold:g}):")
     confusion = certifier_confusion(df, threshold=threshold)
     print(confusion.to_string())
-    
 
     plot_t_certify_boxplots(
         df,
-        save_path=DATA_DIR / "benchmark_sweep_low" / "figures" / "t_certify_boxplots.png",
+        save_path=DATA_DIR
+        / "benchmark_sweep_low"
+        / "figures"
+        / "t_certify_boxplots.png",
     )
-
 
 
 if __name__ == "__main__":

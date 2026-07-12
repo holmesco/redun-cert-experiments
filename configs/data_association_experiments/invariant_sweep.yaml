@@ -19,7 +19,7 @@ invariant_mult_min: 0.01
 invariant_mult_max: 100.0
 invariant_mult_num: 30
 # Methods to run
-methods: [CLIPPER]
+methods: [CLIPPER, SDP]
 # Data association config
 data_association_config:
   invariant_epsilon: 0.0554
