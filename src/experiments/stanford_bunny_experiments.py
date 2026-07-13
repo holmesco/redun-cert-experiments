@@ -83,7 +83,7 @@ class BunnyExperimentConfig:
 
     # --- Poor initialization for CLIPPER ---
     # If True, initialize CLIPPER with a poor initial solution (all outliers).
-    poor_initialization: bool = False
+    poor_init: bool = False
     # Option to also retrieve the global solution by solving the SDP
     get_global_solution: bool = False
     # --- Synthetic noise parameters (bounded normal noise) ---
@@ -503,7 +503,7 @@ def plot_associations(
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
     # Point clouds: source (red) and target (blue).
-    ax.scatter(src[:, 0], src[:, 1], src[:, 2], c="magenta", s=5, label="source")
+    ax.scatter(src[:, 0], src[:, 1], src[:, 2], c="magenta", s=5, label="Source")
     if num_outliers > 0:
         ax.scatter(
             trg[:num_outliers, 0],
@@ -511,7 +511,7 @@ def plot_associations(
             trg[:num_outliers, 2],
             c="red",
             s=5,
-            label="target (outliers)",
+            label="Target (outliers)",
         )
     ax.scatter(
         trg[num_outliers:, 0],
@@ -519,7 +519,7 @@ def plot_associations(
         trg[num_outliers:, 2],
         c="blue",
         s=5,
-        label="target (inliers)",
+        label="Target (inliers)",
     )
     # Association lines: green for inliers, red for outliers, alpha 0.5. When a
     # global solution is available, disagreements are highlighted: red where the
@@ -527,7 +527,7 @@ def plot_associations(
     # reverse, and lines the global solution also rejects are not drawn.
     for i in range(src.shape[0]):
         lw = 0.5
-        alpha = 0.5
+        alpha = 0.3
         if inliers_global is not None:
             if is_inlier[i] and is_inlier_global[i]:
                 color = "green"
@@ -569,7 +569,7 @@ def plot_associations(
     # Set camera to look down the negative Z axis, with Y up
     ax.view_init(elev=90, azim=-90)
 
-    plt.show()
+    return ax
 
 
 def set_seed(seed: int) -> np.random.Generator:
@@ -643,7 +643,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
                         t2 = time.perf_counter()
                         t_affinity = t2 - t1
                         # Initialization for CLIPPER
-                        if cfg.poor_initialization:
+                        if cfg.poor_init:
                             n_outlier = len(A) - len(Agt)
                             x_init = np.zeros(src_t.shape[1], dtype=np.float64)
                             x_init[:n_outlier] = 1.0
@@ -767,7 +767,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
     else:
         num_outliers = 0
     if cfg.plot:
-        plot_associations(
+        ax = plot_associations(
             src_t,
             trg_t,
             inliers,
@@ -775,6 +775,14 @@ def run_experiment(cfg: BunnyExperimentConfig):
             num_outliers,
             data_association_certified,
         )
+        if cfg.save_results:
+            fig_path = run_dir / "associations.png"
+            ax.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")
+            print(f"Saved figure to {fig_path}")
+        else:
+            from matplotlib import pyplot as plt
+
+            plt.show()
 
 
 if __name__ == "__main__":
