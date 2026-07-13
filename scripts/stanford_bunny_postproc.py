@@ -389,11 +389,17 @@ def plot_invariant_sweep_boxplots(
     """
     cats = sorted(df_clipper["inv_mult"].unique())
 
-    fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
-    ax_err, ax_cert, ax_corres = axes
+    # 2x2 layout sized to fit the top third of a standard paper page: it spans
+    # the full text width (~7 in) with a height of ~1/3 of the text area.
+    fig_scale = 2
+    fig, axes = plt.subplots(
+        2, 2, figsize=(7 * fig_scale, 2.5 * fig_scale), sharex=True
+    )
+    (ax_corres, ax_trans), (ax_cert, ax_rot) = axes
 
-    # --- Top panel: registration error distributions (log scale) ---
-    # Boxes are split by whether the trial's data association was certified.
+    # --- Top panels: registration error distributions (log scale) ---
+    # Translation and rotation error are shown in separate panels, with boxes
+    # split by whether the trial's data association was certified.
     def _err_by_cert(col, certified):
         mask = df_clipper["cert_da"] if certified else ~df_clipper["cert_da"]
         return [
@@ -401,36 +407,63 @@ def plot_invariant_sweep_boxplots(
             for c in cats
         ]
 
-    err_series = [
+    trans_series = [
         ("Trans. (Cert.)", "#12428A", _err_by_cert("rel_trans_error", True)),
         ("Trans. (No Cert.)", "#20C0D0", _err_by_cert("rel_trans_error", False)),
+    ]
+    rot_series = [
         ("Rot. (Cert.)", "#C0202B", _err_by_cert("rel_rot_error", True)),
         ("Rot. (No Cert.)", "#F58BB0", _err_by_cert("rel_rot_error", False)),
     ]
-    _log_grouped_boxplot(ax_err, cats, err_series)
-    ax_err.set_yscale("log")
-    ax_err.set_ylabel("Relative Registration Error (%)")
-    ax_err.grid(True, which="both", alpha=0.3)
-    err_handles = [
-        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _ in err_series
-    ]
-    ax_err.legend(err_handles, [label for label, _, _ in err_series])
+    for ax, series, ylabel in (
+        (ax_trans, trans_series, "Relative Translation Error (%)"),
+        (ax_rot, rot_series, "Relative Rotation Error (%)"),
+    ):
+        _log_grouped_boxplot(ax, cats, series)
+        ax.set_yscale("log")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, which="both", alpha=0.3)
+        handles = [
+            plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _ in series
+        ]
+        ax.legend(handles, [label for label, _, _ in series])
 
     # --- Middle panel: percent of trials certified (boolean) ---
     cert_pct = df_clipper.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
-    ax_cert.plot(cats, cert_pct.values, "-", color="#0C0304", label="Clipper Certified")
-    # SDP rank-tight rate: fraction of SDP trials rank tight solution, per invariant multiplier.
+    ax_cert.plot(cats, cert_pct.values, "-", color="#0C0304", label="CP-Cert Certified")
     if df_sdp is not None and len(df_sdp):
+        # Cost-certified rate: match each CLIPPER trial to its SDP counterpart and
+        # compute the relative cost gap |(obj_clipper - obj_sdp) / obj_sdp|, then
+        # report the percent of trials whose gap falls below COST_GAP_TOL.
+        COST_GAP_TOL = 1e-4
+        keys = ["outlier_ratio", "num_assoc", "trial", "inv_mult"]
+        merged = df_clipper.merge(
+            df_sdp[keys + ["obj_value"]].rename(columns={"obj_value": "obj_value_sdp"}),
+            on=keys,
+            how="inner",
+        )
+        merged["cost_gap"] = (
+            (merged["obj_value"] - merged["obj_value_sdp"]) / merged["obj_value_sdp"]
+        ).abs()
+        cost_cert = (
+            merged.groupby("inv_mult")["cost_gap"]
+            .apply(lambda s: (s < COST_GAP_TOL).mean() * 100.0)
+            .reindex(cats)
+        )
+        ax_cert.plot(
+            cats, cost_cert.values, "--", color="#DD8452", label="SDP Cost Certified"
+        )
+        # SDP rank-tight rate: fraction of SDP trials rank tight solution, per invariant multiplier.
         rank_tight = (
             df_sdp.groupby("inv_mult")["num_inliers"]
             .apply(lambda s: s.notna().mean() * 100.0)
             .reindex(cats)
         )
         ax_cert.plot(
-            cats, rank_tight.values, "-", color="#8172B3", label="Rank-Tight Relaxation"
+            cats, rank_tight.values, ":", color="#8172B3", label="SDP Rank-Tight"
         )
 
-    ax_cert.set_ylabel("Percent (%)")
+    ax_cert.set_ylabel("Percent of Trials (%)")
     # ax_cert.set_ylim(0, 101)
     ax_cert.grid(True, which="both", alpha=0.3)
     ax_cert.legend()
@@ -449,12 +482,14 @@ def plot_invariant_sweep_boxplots(
         (
             "Accptd. Corresp. (SDP)",
             "#2E6B45",
-            [
-                df_sdp.loc[df_sdp["inv_mult"] == c, "percent_inliers"].values
-                for c in cats
-            ]
-            if df_sdp is not None
-            else [np.array([]) for _ in cats],
+            (
+                [
+                    df_sdp.loc[df_sdp["inv_mult"] == c, "percent_inliers"].values
+                    for c in cats
+                ]
+                if df_sdp is not None
+                else [np.array([]) for _ in cats]
+            ),
         ),
     ]
     recall_series = [
@@ -507,7 +542,8 @@ def plot_invariant_sweep_boxplots(
             "Precision",
         ],
     )
-    ax_corres.set_xlabel("Graph Noise Parameter / Actual Noise Level")
+    ax_cert.set_xlabel("Graph Noise Parameter / Actual Noise Level")
+    ax_rot.set_xlabel("Graph Noise Parameter / Actual Noise Level")
 
     fig.tight_layout()
     if save_path is not None:
@@ -544,7 +580,7 @@ def invariant_sweep_results():
         save_path=DATA_DIR
         / "invariant_sweep"
         / "figures"
-        / "invariant_sweep_boxplots_clipper.png",
+        / "invariant_sweep_boxplots.png",
     )
 
 
@@ -572,5 +608,8 @@ def benchmark_sweep_low_results():
 
 
 if __name__ == "__main__":
+
     # benchmark_sweep_low_results()
+
+    # Generate invariant parameter sweep experiment results
     invariant_sweep_results()
