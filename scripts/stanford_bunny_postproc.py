@@ -78,9 +78,9 @@ def load_results(
 def load_timing_sweep(data_dir: Path = DATA_DIR) -> pd.DataFrame:
     """Load the ``timing_sweep`` experiment results."""
     # Load both the original and SDP-augmented runs and concatenate them.
-    df_outlier = load_results("timing_sweep_outlier_rate", data_dir=data_dir)
-    # df_assoc = load_results("timing_sweep_num_assoc", data_dir=data_dir)
-    return df_outlier
+    df_outlier = load_results("timing_sweep_outlier_ratio", data_dir=data_dir)
+    df_assoc = load_results("timing_sweep_num_assoc", data_dir=data_dir)
+    return df_outlier, df_assoc
 
 
 def cert_da_percent_by_method(df: pd.DataFrame) -> pd.Series:
@@ -124,53 +124,6 @@ def find_result_csvs(
             if csv_path.is_file():
                 csv_paths.append(csv_path)
     return csv_paths
-
-
-def _grouped_boxplot(ax, x_col, x_categories, series, x_labels=None, box_width=0.8):
-    """Draw side-by-side box plots of several series within each x category.
-
-    ``series`` is a list of ``(label, color, value_col, sub_df)`` tuples; each
-    contributes one box per category, offset within the cluster so the series can
-    be compared directly. ``x_col`` must hold discrete/binned categories present
-    in each ``sub_df``.
-    """
-    n_series = len(series)
-    # Width allotted to one cluster, split evenly among the boxes in it.
-    slot = box_width / max(n_series, 1)
-
-    for j, (_, color, value_col, sub) in enumerate(series):
-        data, positions = [], []
-        for i, cat in enumerate(x_categories):
-            vals = sub.loc[sub[x_col] == cat, value_col].dropna().values
-            if len(vals) == 0:
-                continue
-            data.append(vals)
-            # Offset each series' box within the cluster centered on i.
-            positions.append(i - box_width / 2 + slot * (j + 0.5))
-        if not data:
-            continue
-        ax.boxplot(
-            data,
-            positions=positions,
-            widths=slot * 0.9,
-            patch_artist=True,
-            showfliers=False,
-            boxprops=dict(facecolor=color, edgecolor=color, alpha=0.6),
-            medianprops=dict(color="black"),
-            whiskerprops=dict(color=color),
-            capprops=dict(color=color),
-        )
-
-    ax.set_xticks(range(len(x_categories)))
-    ax.set_xticklabels(x_labels if x_labels is not None else x_categories)
-    ax.set_ylabel("time [s]")
-    ax.set_yscale("log")
-    ax.grid(True, axis="y", which="both", alpha=0.3)
-    # Legend keyed on box color.
-    handles = [
-        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _, _ in series
-    ]
-    ax.legend(handles, [label for label, _, _, _ in series])
 
 
 def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
@@ -231,87 +184,284 @@ def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
 
 
-def _solve_certify_series(df):
-    """Build the ``_grouped_boxplot`` series for solve + certify.
+def _categorical_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
+    """Draw side-by-side box plots at evenly spaced categorical x positions.
 
-    Shows ``t_solver`` boxes for SDP and CLIPPER only, plus a single
-    ``t_certify`` box for CLIPPER, so these sit in the same cluster.
+    ``cats`` are the (numeric) category values and ``series`` is a list of
+    ``(label, color, values_per_cat)`` tuples where ``values_per_cat[i]`` holds
+    the values for ``cats[i]``. Categories are placed at integer positions
+    ``0..len(cats)-1`` and the cluster of boxes for each category is centered on
+    its position; tick labels are set to the category values. Returns a list of
+    proxy legend handles (one per series) in ``series`` order.
     """
-    solve_methods = [m for m in ("SDP", "CLIPPER") if m in df["method"].unique()]
-    series = [
-        (f"{m} solve", METHOD_COLORS[m], "t_solver", df[df["method"] == m])
-        for m in solve_methods
-    ]
-    if "CLIPPER" in df["method"].unique():
-        series.append(
-            ("CLIPPER certify", "#7F7F7F", "t_certify", df[df["method"] == "CLIPPER"])
+    cats = list(cats)
+    positions_base = np.arange(len(cats))
+    slot = cluster_frac / max(len(series), 1)
+
+    handles = []
+    for j, (_, color, per_cat) in enumerate(series):
+        # Offset of this series within the cluster.
+        off = -cluster_frac / 2 + slot * (j + 0.5)
+        data, positions = [], []
+        for i in range(len(cats)):
+            vals = np.asarray(per_cat[i], dtype=float)
+            vals = vals[~np.isnan(vals)]
+            if len(vals) == 0:
+                continue
+            data.append(vals)
+            positions.append(positions_base[i] + off)
+        handles.append(plt.Line2D([0], [0], color=color, lw=6, alpha=0.6))
+        if not data:
+            continue
+        ax.boxplot(
+            data,
+            positions=positions,
+            widths=slot * 0.9,
+            patch_artist=True,
+            showfliers=True,
+            manage_ticks=False,
+            boxprops=dict(facecolor=color, edgecolor=color, alpha=0.6),
+            medianprops=dict(color="black"),
+            whiskerprops=dict(color=color),
+            capprops=dict(color=color),
+            flierprops=dict(
+                marker=".",
+                markersize=3,
+                markerfacecolor=color,
+                markeredgecolor=color,
+                alpha=0.6,
+            ),
         )
-    return series
+
+    ax.set_xticks(positions_base)
+    ax.set_xticklabels([f"{c:g}" for c in cats])
+    ax.set_xlim(-0.5, len(cats) - 0.5)
+    return handles
 
 
-def _constraint_bins(df: pd.DataFrame, n_constraint_bins: int):
-    """Bucket ``num_constraints`` into log-spaced bins.
+# High-contrast (Okabe-Ito) triad, one colour per timing series.
+TIMING_SERIES_COLORS = {
+    "Mosek": "#0072B2",  # SDP solve time
+    "Clipper": "#E69F00",  # CLIPPER solve time
+    "CP-Cert": "#009E73",  # SDP certification time
+}
 
-    Returns ``(binned_df, cat_idx, bin_labels)`` where ``binned_df`` has an added
-    ``_cbin`` integer column, ``cat_idx`` are the occupied bin indices and
-    ``bin_labels`` are "lo–hi" range strings for each.
+
+def _timing_series(df, catcol, cats):
+    """Build ``(label, color, values_per_cat)`` series for the timing plots.
+
+    Splits ``df`` into the CLIPPER and SDP methods and returns the three series
+    plotted by the timing figures: the Mosek (SDP) solve time, the Clipper solve
+    time, and the CP-Cert (SDP certification) time, each as a list of value
+    arrays aligned with ``cats``.
     """
-    c = df["num_constraints"]
-    edges = np.unique(
-        np.geomspace(c.min(), c.max(), n_constraint_bins + 1).round().astype(int)
+    df_clipper = df[df["method"] == "CLIPPER"]
+    df_sdp = df[df["method"] == "SDP"]
+
+    def by_cat(sub, col):
+        return [sub.loc[sub[catcol] == c, col].values for c in cats]
+
+    return [
+        ("Mosek", TIMING_SERIES_COLORS["Mosek"], by_cat(df_sdp, "t_solver")),
+        ("Clipper", TIMING_SERIES_COLORS["Clipper"], by_cat(df_clipper, "t_solver")),
+        ("CP-Cert", TIMING_SERIES_COLORS["CP-Cert"], by_cat(df_sdp, "t_certify")),
+    ]
+
+
+def _add_constraints_axis(ax, cats, df, catcol, positions=None):
+    """Add a second x-axis reporting the mean constraint count per category.
+
+    ``positions`` are the x locations (in the parent axis' data coordinates) at
+    which to place the constraint labels; defaults to the evenly spaced integer
+    positions ``0..len(cats)-1``.
+    """
+    if positions is None:
+        positions = np.arange(len(cats))
+    means = [df.loc[df[catcol] == c, "num_constraints"].mean() for c in cats]
+    sec = ax.secondary_xaxis(-0.22)
+    sec.set_xticks(positions)
+    sec.set_xticklabels(
+        [f"{m:.0f}" for m in means], rotation=45, ha="right", rotation_mode="anchor"
     )
-    # pd.cut assigns each row to a bin; labels are the integer bin index.
-    binned = df.assign(_cbin=pd.cut(c, bins=edges, include_lowest=True, labels=False))
-    cat_idx = sorted(binned["_cbin"].dropna().unique())
-    bin_labels = [f"{edges[i]}–{edges[i + 1]}" for i in cat_idx]
-    return binned, cat_idx, bin_labels
+    sec.set_xlabel("Number of Constraints")
+    sec.tick_params(length=0)
+    return sec
 
 
-def plot_t_certify_boxplots(
-    df: pd.DataFrame,
-    n_constraint_bins: int = 6,
+def _categorical_line_plot(ax, cats, series, xpos=None):
+    """Draw a mean line per series with a shaded min-max band.
+
+    ``cats`` and ``series`` follow the same convention as
+    :func:`_categorical_grouped_boxplot`. Each series is a
+    ``(label, color, values_per_cat)`` tuple; for each series a line traces the
+    per-category mean and a translucent band spans the per-category [min, max]
+    range. Returns a list of proxy legend handles (one per series).
+
+    By default categories are placed at evenly spaced integer positions
+    ``0..len(cats)-1``. If ``xpos`` is given, the series are instead plotted at
+    those x locations (e.g. the actual category values) and the x-axis is set to
+    log scale, with major ticks labelled by the category values.
+    """
+    log_x = xpos is not None
+    positions = np.arange(len(cats)) if xpos is None else np.asarray(xpos, dtype=float)
+
+    # First pass: reduce each series to per-x-value (mean, min, max) points.
+    def _reduce(vals):
+        vals = np.asarray(vals, dtype=float)
+        vals = vals[~np.isnan(vals)]
+        if len(vals) == 0:
+            return np.nan, np.nan, np.nan
+        return vals.mean(), vals.min(), vals.max()
+
+    reduced = []  # (label, color, means, mins, maxs) per series
+    for label, color, per_cat in series:
+        stats = np.array([_reduce(per_cat[i]) for i in range(len(cats))])
+        means, mins, maxs = stats[:, 0], stats[:, 1], stats[:, 2]
+        reduced.append((label, color, means, mins, maxs))
+
+    # Second pass: plot the mean line and min-max band from the reduced points.
+    handles = []
+    for label, color, means, mins, maxs in reduced:
+        ax.fill_between(positions, mins, maxs, color=color, alpha=0.25, linewidth=0)
+        (line,) = ax.plot(
+            positions, means, "-o", color=color, markersize=4, label=label
+        )
+        handles.append(line)
+
+    # Set the log scale before the ticks so it doesn't reset the fixed locator.
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xticks(positions)
+    ax.set_xticklabels([f"{c:g}" for c in cats])
+    if log_x:
+        ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    else:
+        ax.set_xlim(-0.5, len(cats) - 0.5)
+    return handles
+
+
+def plot_timing_sweep_boxplots(
+    df_outlier: pd.DataFrame,
+    df_assoc: pd.DataFrame,
     save_path: Optional[Path] = None,
     show: bool = True,
 ):
-    """Box plots comparing SDP/CLIPPER solve time and CLIPPER certify time.
+    """Box plots of solver/certifier runtimes for the timing sweeps.
 
-    Produces a two-panel figure stacked vertically. Both panels overlay, in the
-    same cluster, the ``t_solver`` boxes for SDP and CLIPPER plus a CLIPPER
-    ``t_certify`` box so solve and certify times can be compared directly. The top panel is grouped
-    by ``num_assoc`` (already discrete) and the bottom panel by
-    ``num_constraints``, which is nearly continuous so it is bucketed into
-    ``n_constraint_bins`` log-spaced bins.
+    Produces a two-panel figure. The left panel sweeps the outlier ratio (fixed
+    number of associations) and the right panel sweeps the number of associations
+    (fixed outlier ratio). Each panel shows three side-by-side box plots per x
+    value on a log y-axis: the SDP solve time, the CLIPPER solve time, and the
+    SDP certification time. ``df_outlier`` and ``df_assoc`` are expected to
+    contain both the ``CLIPPER`` and ``SDP`` methods.
 
     Returns the created ``(fig, axes)``.
     """
+    fig, (ax_out, ax_assoc) = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
 
-    fig, (ax_assoc, ax_constr) = plt.subplots(2, 1, figsize=(12, 11))
-
-    assoc_cats = sorted(df["num_assoc"].unique())
-    binned, cat_idx, bin_labels = _constraint_bins(df, n_constraint_bins)
-
-    # --- Top panel: vs num_assoc (discrete) ---
-    _grouped_boxplot(ax_assoc, "num_assoc", assoc_cats, _solve_certify_series(df))
-    ax_assoc.set_xlabel("num_assoc")
-    ax_assoc.set_title("Solve & certify time vs. number of associations")
-
-    # --- Bottom panel: vs num_constraints (binned) ---
-    _grouped_boxplot(
-        ax_constr, "_cbin", cat_idx, _solve_certify_series(binned), x_labels=bin_labels
+    out_cats = sorted(df_outlier["outlier_ratio"].unique())
+    out_series = _timing_series(df_outlier, "outlier_ratio", out_cats)
+    handles = _categorical_grouped_boxplot(ax_out, out_cats, out_series)
+    ax_out.set_xlabel(
+        f"Outlier Ratio (Num. Assoc. = {df_outlier['num_assoc'].iloc[0]})"
     )
-    ax_constr.set_xlabel("num_constraints")
-    ax_constr.set_title("Solve & certify time vs. number of constraints")
-    ax_constr.tick_params(axis="x", labelrotation=30)
+    ax_out.set_ylabel("Runtime (s)")
+    ax_out.set_yscale("log")
+    ax_out.grid(True, which="both", axis="y", alpha=0.3)
+    ax_out.legend(handles, [label for label, _, _ in out_series])
+    _add_constraints_axis(ax_out, out_cats, df_outlier, "outlier_ratio")
+
+    assoc_cats = sorted(df_assoc["num_assoc"].unique())
+    assoc_series = _timing_series(df_assoc, "num_assoc", assoc_cats)
+    _categorical_grouped_boxplot(ax_assoc, assoc_cats, assoc_series)
+    ax_assoc.set_xlabel(
+        "Number of Associations (Outlier Ratio = "
+        f"{df_assoc['outlier_ratio'].iloc[0]:.2f})"
+    )
+    ax_assoc.set_yscale("log")
+    ax_assoc.grid(True, which="both", axis="y", alpha=0.3)
+    ax_assoc.tick_params(labelleft=True)
+    _add_constraints_axis(ax_assoc, assoc_cats, df_assoc, "num_assoc")
 
     fig.tight_layout()
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
         print(f"Saved figure to {save_path}")
     if show:
         plt.show()
-    return fig, (ax_assoc, ax_constr)
+    return fig, (ax_out, ax_assoc)
+
+
+def plot_timing_sweep_lines(
+    df_outlier: pd.DataFrame,
+    df_assoc: pd.DataFrame,
+    save_path: Optional[Path] = None,
+    show: bool = True,
+):
+    """Line-plot version of :func:`plot_timing_sweep_boxplots`.
+
+    Same two-panel layout, secondary constraint-count axis, and three series
+    (Mosek / Clipper / CP-Cert) on a log y-axis, but each box cluster is replaced
+    by a mean line with a translucent band spanning the [min, max] runtime range
+    across trials. ``df_outlier`` and ``df_assoc`` are expected to contain both
+    the ``CLIPPER`` and ``SDP`` methods.
+
+    Returns the created ``(fig, axes)``.
+    """
+    fig, (ax_out, ax_assoc) = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+
+    out_cats = sorted(df_outlier["outlier_ratio"].unique())
+    out_series = _timing_series(df_outlier, "outlier_ratio", out_cats)
+    # Plot against the actual outlier ratios on a log x-axis.
+    out_arr = np.asarray(out_cats, dtype=float)
+    handles = _categorical_line_plot(ax_out, out_cats, out_series, xpos=out_arr)
+    ax_out.set_xlabel(
+        f"Outlier Ratio (Num. Assoc. = {df_outlier['num_assoc'].iloc[0]})"
+    )
+    ax_out.set_ylabel("Runtime (s)")
+    ax_out.set_yscale("log")
+    ax_out.grid(True, which="both", axis="y", alpha=0.3)
+    ax_out.legend(handles, [label for label, _, _ in out_series])
+    _add_constraints_axis(
+        ax_out, out_cats, df_outlier, "outlier_ratio", positions=out_arr
+    )
+
+    assoc_cats = sorted(df_assoc["num_assoc"].unique())
+    assoc_series = _timing_series(df_assoc, "num_assoc", assoc_cats)
+    # Plot against the actual association counts on a log x-axis.
+    assoc_arr = np.asarray(assoc_cats, dtype=float)
+    _categorical_line_plot(ax_assoc, assoc_cats, assoc_series, xpos=assoc_arr)
+    # Cubic reference line (grey dashed, no markers, excluded from legend),
+    # anchored at (200, 1): y = (num_assoc / 200) ** 3.
+    ax_assoc.plot(
+        assoc_arr,
+        (assoc_arr / 200.0) ** 3,
+        "--",
+        color="grey",
+        label="_nolegend_",
+    )
+    ax_assoc.set_xlabel(
+        "Number of Associations (Outlier Ratio = "
+        f"{df_assoc['outlier_ratio'].iloc[0]:.2f})"
+    )
+    ax_assoc.set_yscale("log")
+    ax_assoc.grid(True, which="both", axis="y", alpha=0.3)
+    ax_assoc.tick_params(labelleft=True)
+    _add_constraints_axis(
+        ax_assoc, assoc_cats, df_assoc, "num_assoc", positions=assoc_arr
+    )
+
+    fig.tight_layout()
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved figure to {save_path}")
+    if show:
+        plt.show()
+    return fig, (ax_out, ax_assoc)
 
 
 def certifier_confusion(
@@ -566,23 +716,14 @@ def plot_invariant_sweep_boxplots(
     return fig, axes
 
 
-def invariant_sweep_results():
-    df = load_results("invariant_sweep")
+def invariant_sweep_results(timestamp=None):
+    df = load_results("invariant_sweep", timestamp=timestamp)
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
     df["percent_inliers"] = df["num_inliers"] / df["num_assoc"] * 100.0
 
     # The CSV now contains both the CLIPPER and SDP methods; split them.
     df_clipper = df[df["method"] == "CLIPPER"]
     df_sdp = df[df["method"] == "SDP"]
-
-    summary = df_clipper.groupby("inv_mult").agg(
-        rel_trans_error=("rel_trans_error", "mean"),
-        rel_rot_error=("rel_rot_error", "mean"),
-        cert_da_pct=("cert_da", lambda s: s.mean() * 100.0),
-        num_inliers=("percent_inliers", "mean"),
-    )
-    print("\nCLIPPER: Metrics by invariant multiplier (mean across trials):")
-    print(summary.to_string())
 
     plot_invariant_sweep_boxplots(
         df_clipper,
@@ -601,26 +742,41 @@ def invariant_sweep_results():
 
 
 def timing_sweep_results():
-    df = load_timing_sweep()
-    print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
+    df_outlier, df_assoc = load_timing_sweep()
+    print(
+        f"\nLoaded {len(df_outlier)} rows from {df_outlier['timestamp'].nunique()} run(s)."
+    )
+    print(f"Loaded {len(df_assoc)} rows from {df_assoc['timestamp'].nunique()} run(s).")
 
-    print("\nPercent of trials with cert_da == True, by method:")
-    cert_pct = cert_da_percent_by_method(df)
-    for method, pct in cert_pct.items():
-        print(f"  {method:>8}: {pct:5.1f}%")
+    threshold = 1e-4
+    print(f"\nOulier sweep confusion (gap threshold {threshold:g}):")
+    confusion = certifier_confusion(df_outlier, threshold=threshold)
+    print(confusion.to_string(float_format="%.2f"))
+    print(f"\nAssoc sweep confusion (gap threshold {threshold:g}):")
+    confusion = certifier_confusion(df_assoc, threshold=threshold)
+    print(confusion.to_string(float_format="%.2f"))
 
-    plot_t_certify_boxplots(
-        df,
-        save_path=DATA_DIR
-        / "timing_sweep_outlier_rate"
-        / "figures"
-        / "t_certify_boxplots.png",
+    # Keep only the CLIPPER and SDP methods; the other methods are not plotted.
+    methods = ["CLIPPER", "SDP"]
+    df_outlier = df_outlier[df_outlier["method"].isin(methods)]
+    df_assoc = df_assoc[df_assoc["method"].isin(methods)]
+
+    plot_timing_sweep_boxplots(
+        df_outlier,
+        df_assoc,
+        save_path=DATA_DIR / "timing_sweep" / "figures" / "timing_sweep_boxplots.png",
+    )
+
+    plot_timing_sweep_lines(
+        df_outlier,
+        df_assoc,
+        save_path=DATA_DIR / "timing_sweep" / "figures" / "timing_sweep_lines.png",
     )
 
 
 if __name__ == "__main__":
 
-    # timing_sweep_results()
+    timing_sweep_results()
 
     # Generate invariant parameter sweep experiment results
-    invariant_sweep_results()
+    # invariant_sweep_results(timestamp="20260715T1826")
