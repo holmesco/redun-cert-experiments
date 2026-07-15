@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Tuple
+import multiprocessing as mp
+from queue import Empty
 import numpy as np
 import time
 
@@ -56,6 +58,10 @@ class DataAssociationConfig:
     )
     # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
     rank_ratio: float = 1e-6
+    # Run the SDP solve in an isolated child process. This protects the parent
+    # experiment from being killed by the Linux OOM killer on large problems:
+    # if the solve is killed, only the child dies and run_sdp returns gracefully.
+    spawn_process: bool = True
 
     # --- Clique to Solution Conversion Parameters ---
     # inlier to solution conversion iterations
@@ -290,18 +296,23 @@ class DataAssociationBlock:
 
         # Retrieve the affinity matrix from the last forward pass
         M = self.get_affinity()
-        # Set up central path certifier
-        ac_params = self.config.ac_params.to_cpp_class()
-        certifier = MaxCliqueCertifier(-M, 0.0, ac_params)
-        t0 = time.time()
-        result = certifier.solve_sdp_mosek()
-        time_sdp = time.time() - t0
-        print(f"SDP solve time: {time_sdp*1e3:.0f} ms")
+        # Solve the SDP, optionally in an isolated child process so that an
+        # OOM kill on a large problem takes down only the child rather than the
+        # whole experiment.
+        if self.config.spawn_process:
+            payload = self._solve_sdp_in_process(M)
+            if payload is None:
+                # The isolated solve was killed (e.g. by the OOM killer).
+                return None, None
+        else:
+            payload = _run_sdp_solve(M, self.config.ac_params)
+
+        print(f"SDP solve time: {payload['time_sdp']*1e3:.0f} ms")
         # Update metrics for tracking.
-        self.num_constraints = certifier.m
-        self.obj_value = result.obj_value
+        self.num_constraints = payload["m"]
+        self.obj_value = payload["obj_value"]
         # Extract rank-1 solution via eigendecomposition
-        X_sol = result.X
+        X_sol = payload["X"]
         eigvals, eigvecs = np.linalg.eigh(X_sol)
         # Determine the rank based on relative ratio of eigenvalues
         max_eigval = eigvals[-1]
@@ -318,6 +329,58 @@ class DataAssociationBlock:
             thresh = np.max(U_abs) / 2
             inliers = torch.from_numpy(U_abs > thresh).bool()  # (N,)
         return inliers, U
+
+    def _solve_sdp_in_process(self, M):
+        """Run the SDP solve in a spawned child process.
+
+        Isolates the (potentially memory-hungry) solve so that if the Linux OOM
+        killer terminates it, only the child dies and the parent experiment
+        survives. A child killed by a signal reports a negative exitcode equal to
+        -signal (e.g. -9 for SIGKILL from the OOM killer).
+
+        Args:
+            M (np.ndarray): Affinity matrix, of shape (N, N).
+        Returns:
+            dict | None: The solve result (see _run_sdp_solve), or None if the
+                child process died without producing a result.
+        """
+        # "spawn" starts a clean interpreter, avoiding forking the parent's torch
+        # / CUDA state. The worker therefore reconstructs the certifier itself.
+        ctx = mp.get_context("spawn")
+        result_queue = ctx.Queue()
+        proc = ctx.Process(
+            target=_solve_sdp_worker,
+            args=(M, self.config.ac_params, result_queue),
+        )
+        proc.start()
+
+        # Drain the queue before joining: the result (X is N x N) can be large
+        # enough that the child blocks writing to the pipe until we read it, which
+        # would deadlock a plain join(). Poll so we also notice if the child dies
+        # without ever putting a result (the OOM-kill case).
+        payload = None
+        while payload is None:
+            try:
+                payload = result_queue.get(timeout=1.0)
+            except Empty:
+                if not proc.is_alive():
+                    # Process finished; attempt one final non-blocking drain in
+                    # case it exited just after putting the result.
+                    try:
+                        payload = result_queue.get_nowait()
+                    except Empty:
+                        break
+        proc.join()
+
+        if payload is None:
+            if proc.exitcode == -9:
+                print("SDP solve was OOM-killed; skipping this problem.")
+            else:
+                print(
+                    f"SDP worker died without a result (exitcode={proc.exitcode}); "
+                    "skipping this problem."
+                )
+        return payload
 
     def inliers_to_solution(self, inliers: torch.Tensor) -> Tuple[torch.Tensor, float]:
         """Convert inlier mask to solution vector for the max clique problem defined by M.
@@ -469,3 +532,37 @@ def get_maxclique_sdp_constraints(M: np.ndarray):
     values[-1] = 1.0  # Trace constraint
 
     return constraints, values
+
+
+# ---- Helper functions for running the SDP solve in a child process ----
+def _run_sdp_solve(M, ac_params_config):
+    """Construct the MaxCliqueCertifier and solve the SDP relaxation.
+
+    Returns only plain, picklable data so this can run either in-process or in a
+    spawned child process. The solve is timed here (rather than in the caller) so
+    that the reported time excludes any process-spawn overhead.
+
+    Args:
+        M (np.ndarray): Affinity matrix, of shape (N, N).
+        ac_params_config (AnalyticCenterParamsConfig): Picklable Python config;
+            converted to its C++ class inside this function so nothing that
+            crosses a process boundary needs to be a bound C++ object.
+    Returns:
+        dict: {"obj_value", "X", "m", "time_sdp"}.
+    """
+    ac_params = ac_params_config.to_cpp_class()
+    certifier = MaxCliqueCertifier(-M, 0.0, ac_params)
+    t0 = time.time()
+    result = certifier.solve_sdp_mosek()
+    time_sdp = time.time() - t0
+    return {
+        "obj_value": result.obj_value,
+        "X": np.asarray(result.X),
+        "m": certifier.m,
+        "time_sdp": time_sdp,
+    }
+
+
+def _solve_sdp_worker(M, ac_params_config, result_queue):
+    """Child-process entry point: solve the SDP and put the result on the queue."""
+    result_queue.put(_run_sdp_solve(M, ac_params_config))

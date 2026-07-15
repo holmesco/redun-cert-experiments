@@ -1,0 +1,53 @@
+experiment_name: "inv_sweep_30"
+experiment_type: CLIPPER_BENCHMARK
+ply_path: "data/bun10k.ply"
+seed: 0
+# Bounded normal noise parameters
+noise_beta: 0.0554
+noise_sigma: 0.01
+# Sweep parameters
+num_assocs: [100]
+outlier_ratios: [0.5]
+num_trials: 1
+# Plot and Save plot
+save_results: True
+plot: True
+# Get global for comparison
+get_global_solution: True
+# turn on registration
+registration: False
+#  Sweep fixed to one value
+invariant_mult_min: 30.0
+invariant_mult_max: 30.0
+invariant_mult_num: 1
+# Methods to run
+methods: [CLIPPER]
+# Data association config
+data_association_config:
+  invariant_epsilon: 0.0554
+  invariant_sigma: 0.01
+  certify: True
+  method: CLIPPER
+  ac_params:
+    verbose: True
+    lin_solver: MFCG_LRP
+    lin_solve_max_iter: 200
+    lin_solve_tol: 1e-8
+    delta: 1e-7
+    rescale_lin_sys: False
+    max_iter: 10
+    # Early stopping local
+    early_stop_angle: True
+    max_angle: 5e-5
+    # Perturbation parameters
+    perturb_cost: True
+    eps_cost: 1e-7
+    perturb_constraints: True
+    eps_constr: 1e-7
+    # Preconditioner parameters
+    lrp_params:
+      tau: 1e-7
+      method: SparseLDLT
+    # Adaptive perturbation
+    adaptive_perturb: True
+    eps_mult_min: 1e-3

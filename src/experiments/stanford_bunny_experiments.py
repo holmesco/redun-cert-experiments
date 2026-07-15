@@ -626,6 +626,9 @@ def run_experiment(cfg: BunnyExperimentConfig):
             data_association.set_clipper(
                 invariant_sigma=invariant_sigma, invariant_epsilon=invariant_epsilon
             )
+            # Set RANSAC threshold to invariant_sigma
+            # Note: threshold should be at or below 0.5 to return inliers
+            data_association.config.ransac_inlier_threshold = invariant_sigma * 0.5
             for rho in cfg.outlier_ratios:
                 for m in cfg.num_assocs:
                     for trial in range(cfg.num_trials):
@@ -762,10 +765,11 @@ def run_experiment(cfg: BunnyExperimentConfig):
         print(df[["method", "cert_da", "t_certify", "num_iter_cert"]])
 
     # Plot the final problem instance (point clouds + associations).
-    if cfg.experiment_type == ExperimentType.ADVERSARIAL:
-        num_outliers = len(A) - len(Agt)
-    else:
-        num_outliers = 0
+    # if cfg.experiment_type == ExperimentType.ADVERSARIAL:
+    #     num_outliers = len(A) - len(Agt)
+    # else:
+    #     num_outliers = 0
+    num_outliers = 0
     if cfg.plot:
         ax = plot_associations(
             src_t,

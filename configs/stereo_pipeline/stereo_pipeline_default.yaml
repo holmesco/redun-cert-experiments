@@ -17,9 +17,9 @@ registration_config:
     early_stop_angle: True
     max_angle: 1e-2
     # Perturbation parameters
-    perturb_constraints: True
     perturb_cost: True
     eps_cost: 1e-5
+    perturb_constraints: False
     eps_constr: 1e-5
     # Preconditioner parameters
     lrp_params:
@@ -39,17 +39,17 @@ data_association_config:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200
-    lin_solve_tol: 1e-10
+    lin_solve_tol: 1e-8
     delta: 1e-7
     rescale_lin_sys: False
     max_iter: 10
     # Early stopping local
     early_stop_angle: True
-    max_angle: 1e-5
+    max_angle: 8e-5
     # Perturbation parameters
     perturb_cost: True
     eps_cost: 1e-7
-    perturb_constraints: True
+    perturb_constraints: False
     eps_constr: 1e-7
     # Preconditioner parameters
     lrp_params:

@@ -75,13 +75,12 @@ def load_results(
     return pd.concat(frames, ignore_index=True)
 
 
-def load_benchmark_sweep_low(data_dir: Path = DATA_DIR) -> pd.DataFrame:
-    """Load the ``benchmark_sweep_low`` experiment results."""
+def load_timing_sweep(data_dir: Path = DATA_DIR) -> pd.DataFrame:
+    """Load the ``timing_sweep`` experiment results."""
     # Load both the original and SDP-augmented runs and concatenate them.
-    df = load_results("benchmark_sweep_low", data_dir=data_dir)
-    df_sdp = load_results("benchmark_sweep_low_sdp", data_dir=data_dir)
-    df = pd.concat([df, df_sdp], ignore_index=True)
-    return df
+    df_outlier = load_results("timing_sweep_outlier_rate", data_dir=data_dir)
+    # df_assoc = load_results("timing_sweep_num_assoc", data_dir=data_dir)
+    return df_outlier
 
 
 def cert_da_percent_by_method(df: pd.DataFrame) -> pd.Series:
@@ -338,7 +337,14 @@ def certifier_confusion(
     methods are evaluated on the exact same set of problem instances. Returns a
     DataFrame indexed by method with columns ``[TP, FP, TN, FN, N]``.
     """
-    keys = ["num_assoc", "outlier_ratio", "trial"]
+    keys = ["num_assoc", "outlier_ratio", "trial", "inv_mult"]
+    # Only keep trials where the reference method produced a valid num_inliers;
+    # a NaN there means the reference solve failed and the trial is invalid.
+    valid_keys = df.loc[
+        (df["method"] == reference_method) & df["num_inliers"].notna(), keys
+    ]
+    df = df.merge(valid_keys.drop_duplicates(), on=keys, how="inner")
+
     # Keep only run-keys that have a row for every method present in df.
     n_methods = df["method"].nunique()
     df = df.groupby(keys).filter(lambda g: g["method"].nunique() == n_methods)
@@ -349,8 +355,8 @@ def certifier_confusion(
     merged = df.merge(ref, on=keys, how="inner")
 
     merged["gap"] = (merged["obj_value"] - merged["obj_value_ref"]) / (
-        merged["obj_value_ref"] + 1
-    ).abs()
+        merged["obj_value_ref"].abs()
+    )
 
     merged["gt_cert"] = merged["gap"] < threshold
     pred = merged["cert_da"].astype(bool)
@@ -361,8 +367,10 @@ def certifier_confusion(
     merged["TN"] = ~pred & ~gt
     merged["FN"] = ~pred & gt
 
-    table = merged.groupby("method")[["TP", "FP", "TN", "FN"]].sum()
-    table["N"] = table.sum(axis=1)
+    counts = merged.groupby("method")[["TP", "FP", "TN", "FN"]].sum()
+    n = counts.sum(axis=1)
+    table = counts.div(n, axis=0) * 100.0
+    table["N"] = n
     return table
 
 
@@ -391,11 +399,11 @@ def plot_invariant_sweep_boxplots(
 
     # 2x2 layout sized to fit the top third of a standard paper page: it spans
     # the full text width (~7 in) with a height of ~1/3 of the text area.
-    fig_scale = 2
+    fig_scale = 2.2
     fig, axes = plt.subplots(
-        2, 2, figsize=(7 * fig_scale, 2.5 * fig_scale), sharex=True
+        2, 2, figsize=(6 * fig_scale, 2.5 * fig_scale), sharex=True
     )
-    (ax_corres, ax_trans), (ax_cert, ax_rot) = axes
+    (ax_corres, ax_cert), (ax_reg_err, ax_none) = axes
 
     # --- Top panels: registration error distributions (log scale) ---
     # Translation and rotation error are shown in separate panels, with boxes
@@ -415,18 +423,18 @@ def plot_invariant_sweep_boxplots(
         ("Rot. (Cert.)", "#C0202B", _err_by_cert("rel_rot_error", True)),
         ("Rot. (No Cert.)", "#F58BB0", _err_by_cert("rel_rot_error", False)),
     ]
-    for ax, series, ylabel in (
-        (ax_trans, trans_series, "Relative Translation Error (%)"),
-        (ax_rot, rot_series, "Relative Rotation Error (%)"),
-    ):
-        _log_grouped_boxplot(ax, cats, series)
-        ax.set_yscale("log")
-        ax.set_ylabel(ylabel)
-        ax.grid(True, which="both", alpha=0.3)
-        handles = [
-            plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _ in series
-        ]
-        ax.legend(handles, [label for label, _, _ in series])
+    # Combine translation and rotation error distributions into the top-right
+    # panel; the bottom-right panel (ax_rot) is left empty for now.
+    err_series = trans_series + rot_series
+    _log_grouped_boxplot(ax_reg_err, cats, err_series)
+    ax_reg_err.set_yscale("log")
+    ax_reg_err.set_ylabel("Relative Error (%)")
+    ax_reg_err.grid(True, which="both", alpha=0.3)
+    handles = [
+        plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _ in err_series
+    ]
+    ax_reg_err.legend(handles, [label for label, _, _ in err_series])
+    ax_none.set_visible(False)
 
     # --- Middle panel: percent of trials certified (boolean) ---
     cert_pct = df_clipper.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
@@ -451,7 +459,7 @@ def plot_invariant_sweep_boxplots(
             .reindex(cats)
         )
         ax_cert.plot(
-            cats, cost_cert.values, "--", color="#DD8452", label="SDP Cost Certified"
+            cats, cost_cert.values, "--", color="#DD8452", label="Cost Certified"
         )
         # SDP rank-tight rate: fraction of SDP trials rank tight solution, per invariant multiplier.
         rank_tight = (
@@ -536,20 +544,22 @@ def plot_invariant_sweep_boxplots(
     ax_corres.legend(
         handles,
         [
-            "Accptd. Corresp. (Clipper)",
-            "Accptd. Corresp. (SDP)",
+            "Corresp. (Clipper)",
+            "Corresp. (SDP)",
             "Recall",
             "Precision",
         ],
     )
-    ax_cert.set_xlabel("Graph Noise Parameter / Actual Noise Level")
-    ax_rot.set_xlabel("Graph Noise Parameter / Actual Noise Level")
+    x_ax_string = r"Noise Ratio Assumed/Actual ($\alpha = \sigma / \gamma$)"
+    for ax in (ax_corres, ax_cert, ax_reg_err):
+        ax.set_xlabel(x_ax_string)
+        ax.tick_params(labelbottom=True)
 
     fig.tight_layout()
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
         print(f"Saved figure to {save_path}")
     if show:
         plt.show()
@@ -583,9 +593,15 @@ def invariant_sweep_results():
         / "invariant_sweep_boxplots.png",
     )
 
+    threshold = 1e-4
+    print(f"\nCertifier confusion vs. SDP ground truth (gap threshold {threshold:g}):")
+    confusion = certifier_confusion(df, threshold=threshold)
+    print(confusion.to_string(float_format="%.2f"))
+    print(confusion.to_latex(float_format="%.2f"))
 
-def benchmark_sweep_low_results():
-    df = load_benchmark_sweep_low()
+
+def timing_sweep_results():
+    df = load_timing_sweep()
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
 
     print("\nPercent of trials with cert_da == True, by method:")
@@ -593,15 +609,10 @@ def benchmark_sweep_low_results():
     for method, pct in cert_pct.items():
         print(f"  {method:>8}: {pct:5.1f}%")
 
-    threshold = 1e-2
-    print(f"\nCertifier confusion vs. SDP ground truth (gap threshold {threshold:g}):")
-    confusion = certifier_confusion(df, threshold=threshold)
-    print(confusion.to_string())
-
     plot_t_certify_boxplots(
         df,
         save_path=DATA_DIR
-        / "benchmark_sweep_low"
+        / "timing_sweep_outlier_rate"
         / "figures"
         / "t_certify_boxplots.png",
     )
@@ -609,7 +620,7 @@ def benchmark_sweep_low_results():
 
 if __name__ == "__main__":
 
-    # benchmark_sweep_low_results()
+    # timing_sweep_results()
 
     # Generate invariant parameter sweep experiment results
     invariant_sweep_results()
