@@ -263,8 +263,8 @@ def _timing_series(df, catcol, cats):
 
     return [
         ("Mosek", TIMING_SERIES_COLORS["Mosek"], by_cat(df_sdp, "t_solver")),
-        ("Clipper", TIMING_SERIES_COLORS["Clipper"], by_cat(df_clipper, "t_solver")),
         ("CP-Cert", TIMING_SERIES_COLORS["CP-Cert"], by_cat(df_sdp, "t_certify")),
+        ("Clipper", TIMING_SERIES_COLORS["Clipper"], by_cat(df_clipper, "t_solver")),
     ]
 
 
@@ -410,20 +410,21 @@ def plot_timing_sweep_lines(
 
     Returns the created ``(fig, axes)``.
     """
-    fig, (ax_out, ax_assoc) = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+    fig_scale = 1.2
+    fig, (ax_assoc, ax_out) = plt.subplots(2, 1, figsize=(5 * fig_scale, 5 * fig_scale))
 
     out_cats = sorted(df_outlier["outlier_ratio"].unique())
     out_series = _timing_series(df_outlier, "outlier_ratio", out_cats)
     # Plot against the actual outlier ratios on a log x-axis.
     out_arr = np.asarray(out_cats, dtype=float)
-    handles = _categorical_line_plot(ax_out, out_cats, out_series, xpos=out_arr)
+    _categorical_line_plot(ax_out, out_cats, out_series, xpos=out_arr)
     ax_out.set_xlabel(
         f"Outlier Ratio (Num. Assoc. = {df_outlier['num_assoc'].iloc[0]})"
     )
     ax_out.set_ylabel("Runtime (s)")
     ax_out.set_yscale("log")
     ax_out.grid(True, which="both", axis="y", alpha=0.3)
-    ax_out.legend(handles, [label for label, _, _ in out_series])
+
     _add_constraints_axis(
         ax_out, out_cats, df_outlier, "outlier_ratio", positions=out_arr
     )
@@ -432,7 +433,7 @@ def plot_timing_sweep_lines(
     assoc_series = _timing_series(df_assoc, "num_assoc", assoc_cats)
     # Plot against the actual association counts on a log x-axis.
     assoc_arr = np.asarray(assoc_cats, dtype=float)
-    _categorical_line_plot(ax_assoc, assoc_cats, assoc_series, xpos=assoc_arr)
+    handles = _categorical_line_plot(ax_assoc, assoc_cats, assoc_series, xpos=assoc_arr)
     # Cubic reference line (grey dashed, no markers, excluded from legend),
     # anchored at (200, 1): y = (num_assoc / 200) ** 3.
     ax_assoc.plot(
@@ -447,17 +448,19 @@ def plot_timing_sweep_lines(
         f"{df_assoc['outlier_ratio'].iloc[0]:.2f})"
     )
     ax_assoc.set_yscale("log")
+    ax_assoc.set_ylabel("Runtime (s)")
     ax_assoc.grid(True, which="both", axis="y", alpha=0.3)
     ax_assoc.tick_params(labelleft=True)
-    _add_constraints_axis(
-        ax_assoc, assoc_cats, df_assoc, "num_assoc", positions=assoc_arr
-    )
+    ax_assoc.legend(handles, [label for label, _, _ in out_series], ncols=3)
+    # _add_constraints_axis(
+    #     ax_assoc, assoc_cats, df_assoc, "num_assoc", positions=assoc_arr
+    # )
 
     fig.tight_layout()
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=500, bbox_inches="tight")
         print(f"Saved figure to {save_path}")
     if show:
         plt.show()
@@ -760,6 +763,11 @@ def timing_sweep_results():
     methods = ["CLIPPER", "SDP"]
     df_outlier = df_outlier[df_outlier["method"].isin(methods)]
     df_assoc = df_assoc[df_assoc["method"].isin(methods)]
+
+    df = pd.concat([df_outlier, df_assoc], ignore_index=True)
+    print(
+        f"Average number of iterations for certification:{df[df["method"]=="CLIPPER"]["num_iter_cert"].mean()}"
+    )
 
     plot_timing_sweep_boxplots(
         df_outlier,
