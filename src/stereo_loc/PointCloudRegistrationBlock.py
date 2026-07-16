@@ -12,6 +12,7 @@ from ranktools import (
 )
 from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
 from mat_weight_loc.one_pose_stereo_loc import SinglePoseStereoLocalization
+import gtsam
 
 
 @dataclass
@@ -89,6 +90,23 @@ class PointCloudRegistrationBlock:
             adjust_cost=self.config.adjust_cost,
         )
         return result
+
+    def solve_sdp(self, verbose: bool = False) -> Tuple[np.ndarray, dict]:
+        """Solve the SDP relaxation of the registration problem."""
+        X, info = self.localizer.solve_sdp(verbose=verbose)
+        # Check rank-1 solution
+        eigenvalues = np.linalg.eigvalsh(X)
+        eigenvalues = np.sort(eigenvalues)[::-1]
+        assert (
+            eigenvalues[0] / eigenvalues[1] > 1e6
+        ), f"Eigenvalue ratio: {eigenvalues[0] / eigenvalues[1]}"
+        # Check that solution is close to ground truth
+        values = self.localizer.values_from_vector(X[:, 0])
+        key = gtsam.Symbol("x", 0).key()
+        T_trg_src_sdp = values.atPose3(key)
+        # Update cost from solution
+        info["cost"] = self.localizer.graph.error(values)
+        return T_trg_src_sdp, info
 
 
 def estimate_pose_svd(keypoints_3D_src, keypoints_3D_trg):

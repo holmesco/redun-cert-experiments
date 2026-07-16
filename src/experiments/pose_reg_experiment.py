@@ -1,0 +1,459 @@
+"""Pose registration certification experiment.
+
+This experiment stresses the certifier of the
+:class:`PointCloudRegistrationBlock` on synthetic pose registration problems
+generated from the Stanford bunny point cloud.
+
+Setup (per problem instance):
+
+* Sample ``N`` points from the (rescaled, zero-centered) bunny model. These are
+  the *source* keypoints, expressed in the model/world frame.
+* Build a "camera frame" whose z axis points at the centroid of the cloud and
+  whose origin is offset from the centroid by a parameterized distance. A
+  slight y-axis rotation (parameterized by ``theta``) is applied to the camera
+  pose to obtain some parallax. The relative transform to the camera frame is
+  the ground-truth registration solution.
+* The *target* keypoints are the source points expressed in the camera frame,
+  corrupted by noise drawn from the linearized stereo camera covariance (the
+  same model used by ``get_inv_cov_weights``).
+
+Each trial then mirrors the pose registration portion of
+:meth:`StereoPipeline.forward`: matrix weights are computed with
+``get_inv_cov_weights``, the pose is estimated with the factor graph solver
+from an initial value that is either the ground truth or a random perturbation
+of it (see :class:`InitType`), and the solution is certified.
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import List
+import time
+
+import numpy as np
+import pandas as pd
+import torch
+from omegaconf import OmegaConf
+from scipy.spatial.transform import Rotation
+from tqdm import tqdm
+import open3d as o3d
+
+from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
+from stereo_loc.PointCloudRegistrationBlock import (
+    PointCloudRegistrationBlock,
+    PointCloudRegistrationConfig,
+)
+from utils.keypoint_tools import get_inv_cov_weights
+from utils.stereo_camera_model import StereoCameraModel, StereoCameraConfig
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class InitType(Enum):
+    """How the initial value for the factor graph solver is generated."""
+
+    # Initialize at the ground-truth transform.
+    GROUNDTRUTH = "GROUNDTRUTH"
+    # Initialize at a random perturbation of the ground-truth transform (see
+    # ``init_rot_pert_max`` / ``init_trans_pert_max``).
+    RANDOM = "RANDOM"
+
+
+@dataclass
+class PoseRegExperimentConfig:
+    # Name of the experiment, used for saving results.
+    experiment_name: str = "pose_reg_default"
+    # Path (relative to ROOT) to the .ply point cloud used to generate problems.
+    ply_path: Path = Path("data/bun10k.ply")
+    # Side length of the cube the point cloud is rescaled into.
+    scale_cube_size: float = 1.0
+    # Seed for reproducibility.
+    seed: int = 0
+    # Save results
+    save_results: bool = True
+    # Plot the final problem instance (source cloud + camera frame) at the end.
+    plot: bool = False
+
+    # --- Problem setup parameters (sweeps) ---
+    # Numbers of points sampled from the bunny model.
+    num_points: List[int] = field(default_factory=lambda: [50])
+    # Offsets of the camera frame from the cloud centroid, along the optical axis.
+    camera_distances: List[float] = field(default_factory=lambda: [3.0])
+    # y-axis rotations (radians) applied to the camera pose to obtain parallax.
+    thetas: List[float] = field(default_factory=lambda: [0.2])
+
+    # --- Stereo camera model used for noise generation and matrix weights ---
+    stereo_camera_config: StereoCameraConfig = field(
+        default_factory=lambda: StereoCameraConfig(
+            cu=0.0, cv=0.0, f=484.5, b=0.24, sigma=0.5
+        )
+    )
+    # If True, corrupt the target keypoints with noise drawn from the linearized
+    # stereo camera covariance.
+    add_noise: bool = True
+
+    # --- Registration / certification config ---
+    registration_config: PointCloudRegistrationConfig = field(
+        default_factory=lambda: PointCloudRegistrationConfig(
+            certify=True,
+            ac_params=AnalyticCenterParamsConfig(verbose=False),
+        )
+    )
+
+    # --- Trial parameters (initial values) ---
+    # How the initial value is generated for each trial.
+    init_type: InitType = InitType.RANDOM
+    # Number of trials (different initial values) per problem instance.
+    num_trials: int = 20
+    # Maximum rotation perturbation (radians) for random initial values.
+    init_rot_pert_max: float = 3.14159265
+    # Maximum translation perturbation (norm) for random initial values.
+    init_trans_pert_max: float = 1.0
+    # Relative cost tolerance for flagging convergence to the global optimum.
+    global_cost_rtol: float = 1e-4
+
+
+def load_experiment_config(config_path: Path) -> PoseRegExperimentConfig:
+    # Start with defaults from the dataclass.
+    config = OmegaConf.structured(PoseRegExperimentConfig)
+    # Merge overrides if provided.
+    if config_path:
+        overrides = OmegaConf.load(ROOT / config_path)
+        config = OmegaConf.merge(config, overrides)
+    return OmegaConf.to_object(config)
+
+
+# ----------------------------------------------------------------------------
+# Point cloud / problem setup helpers
+# ----------------------------------------------------------------------------
+
+
+def read_ply(ply_path: Path) -> np.ndarray:
+    """Read x-y-z vertices from a PLY file into an (N, 3) array."""
+    pcd = o3d.io.read_point_cloud(str(ply_path))
+    pts = np.asarray(pcd.points)
+    if pts.shape[0] == 0:
+        raise ValueError(f"No points found in {ply_path}")
+
+    return pts
+
+
+def scale_to_cube(pts: np.ndarray, s: float) -> np.ndarray:
+    """Rescale a point cloud so that its largest extent equals ``s``."""
+    extent = pts.max(axis=0) - pts.min(axis=0)
+    sf = extent.max()
+    return pts * (s / sf)
+
+
+def get_camera_transform(distance: float, theta: float) -> np.ndarray:
+    """Build the camera pose ``T_w_c`` (camera frame expressed in the world frame).
+
+    The camera z axis points at the centroid of the cloud (the world origin,
+    since the cloud is zero-centered) from a distance ``distance`` along the
+    optical axis. ``theta`` rotates the camera pose about the world y axis so
+    that the viewpoint is slightly off the -z axis, providing parallax.
+
+    Returns the (4, 4) homogeneous transform ``T_w_c`` such that
+    ``p_w = T_w_c @ p_c``.
+    """
+    # Camera axes in the world frame.
+    R_w_c = Rotation.from_euler("y", theta).as_matrix()
+    # Place the camera so its z axis points at the centroid from ``distance``:
+    # the camera center plus ``distance`` times the optical axis is the origin.
+    z_axis_w = R_w_c[:, 2]
+    camera_center_w = -distance * z_axis_w
+    T_w_c = np.eye(4)
+    T_w_c[:3, :3] = R_w_c
+    T_w_c[:3, 3] = camera_center_w
+    return T_w_c
+
+
+def pose_reg_setup(
+    cfg: PoseRegExperimentConfig,
+    pcd0: np.ndarray,
+    n: int,
+    distance: float,
+    theta: float,
+    stereo_cam: StereoCameraModel,
+    rng: np.random.Generator,
+):
+    """Generate a single pose registration problem instance.
+
+    Samples ``n`` points from the bunny, expresses them in the camera frame
+    (with stereo-camera noise if enabled) and computes the matrix weights via
+    ``get_inv_cov_weights``.
+
+    Returns ``(kpt_3D_src, kpt_3D_trg, inv_cov_weights, T_w_c)`` where the
+    keypoints are homogeneous (4, n) tensors, the weights have shape
+    (n, 3, 3) and ``T_w_c`` is the ground-truth camera pose. The ground-truth
+    registration solution (``T_src_trg``) is ``T_w_c`` itself, since the source
+    keypoints live in the world frame and the target keypoints in the camera
+    frame.
+    """
+    # Set default datatype to float32 for PyTorch tensors.
+    torch.set_default_dtype(torch.float32)
+    # Sample n points from the bunny model (world/source frame).
+    idx = rng.choice(pcd0.shape[0], size=n, replace=False)
+    pts_w = pcd0[idx]  # (n, 3)
+    kpt_3D_src = torch.ones(4, n, dtype=torch.float32)
+    kpt_3D_src[:3, :] = torch.from_numpy(pts_w.T).float()
+
+    # Ground-truth camera pose and target keypoints in the camera frame.
+    T_w_c = get_camera_transform(distance, theta)
+    T_c_w = np.linalg.inv(T_w_c)
+    kpt_3D_trg = torch.from_numpy(T_c_w).float() @ kpt_3D_src
+
+    # Corrupt the target keypoints with noise drawn from the linearized stereo
+    # camera covariance at the (noiseless) camera-frame points.
+    valid = torch.ones(1, 1, n, dtype=bool)
+    if cfg.add_noise:
+        _, cov_cam = get_inv_cov_weights(
+            kpt_3D_trg.unsqueeze(0), valid, stereo_cam, normalize_weights=True
+        )
+        L = torch.linalg.cholesky(cov_cam[0])  # (n, 3, 3)
+        noise = torch.from_numpy(rng.standard_normal((n, 3, 1))).float()
+        kpt_3D_trg[:3, :] = kpt_3D_trg[:3, :] + L.bmm(noise).squeeze(2).T
+
+    # Matrix weights from the measured (noisy) camera-frame keypoints, matching
+    # the pose registration code in StereoPipeline.forward.
+    inv_cov_weights, _ = get_inv_cov_weights(
+        kpt_3D_trg.unsqueeze(0), valid, stereo_cam, normalize_weights=True
+    )
+
+    return kpt_3D_src, kpt_3D_trg, inv_cov_weights.squeeze(0), T_w_c
+
+
+def sample_initial_pose(
+    T_gt: np.ndarray,
+    init_type: InitType,
+    rot_pert_max: float,
+    trans_pert_max: float,
+    rng: np.random.Generator,
+):
+    """Generate an initial value ``T_init`` (``T_src_trg``) for the solver.
+
+    Returns ``(T_init, rot_pert, trans_pert)`` where the perturbation
+    magnitudes are zero for ``InitType.GROUNDTRUTH``.
+    """
+    if init_type == InitType.GROUNDTRUTH:
+        return T_gt.copy(), 0.0, 0.0
+
+    # Random rotation perturbation (random axis, angle in [0, rot_pert_max]).
+    axis = rng.normal(size=3)
+    axis /= np.linalg.norm(axis)
+    rot_pert = rng.uniform(0.0, rot_pert_max)
+    dR = Rotation.from_rotvec(rot_pert * axis).as_matrix()
+    # Random translation perturbation (random direction, norm in [0, trans_pert_max]).
+    direction = rng.normal(size=3)
+    direction /= np.linalg.norm(direction)
+    trans_pert = rng.uniform(0.0, trans_pert_max)
+
+    T_init = T_gt.copy()
+    T_init[:3, :3] = dR @ T_gt[:3, :3]
+    T_init[:3, 3] = T_gt[:3, 3] + trans_pert * direction
+    return T_init, rot_pert, trans_pert
+
+
+def pose_errors(T_est: np.ndarray, T_gt: np.ndarray):
+    """Rotation (radians) and translation (norm) errors of ``T_est`` w.r.t. ``T_gt``."""
+    T_err = np.linalg.inv(T_est) @ T_gt
+    rot_error = np.linalg.norm(Rotation.from_matrix(T_err[:3, :3]).as_rotvec())
+    trans_error = np.linalg.norm(T_err[:3, 3])
+    return rot_error, trans_error
+
+
+def plot_setup(
+    kpt_3D_src: torch.Tensor, T_w_c: np.ndarray, T_w_c_est: np.ndarray | None = None
+):
+    """Plot the source cloud together with the true (and estimated) camera frames.
+
+    Camera axes are drawn as RGB (x, y, z) line segments at the camera center.
+    """
+    import matplotlib.pyplot as plt
+
+    pts = kpt_3D_src[:3, :].cpu().numpy().T
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="magenta", s=5, label="Source")
+
+    def draw_frame(T, scale, ls):
+        origin = T[:3, 3]
+        for axis_idx, color in enumerate(["red", "green", "blue"]):
+            tip = origin + scale * T[:3, axis_idx]
+            ax.plot(
+                [origin[0], tip[0]],
+                [origin[1], tip[1]],
+                [origin[2], tip[2]],
+                color=color,
+                linestyle=ls,
+            )
+
+    draw_frame(T_w_c, scale=0.5, ls="-")
+    if T_w_c_est is not None:
+        draw_frame(T_w_c_est, scale=0.5, ls="--")
+    ax.set_title("Pose registration setup (solid: GT camera, dashed: estimate)")
+    ax.legend()
+    ax.set_aspect("equal")
+    return ax
+
+
+def set_seed(seed: int) -> np.random.Generator:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    return rng
+
+
+# ----------------------------------------------------------------------------
+# Experiment driver
+# ----------------------------------------------------------------------------
+
+
+def run_experiment(cfg: PoseRegExperimentConfig):
+    rng = set_seed(cfg.seed)
+    # Load, rescale and zero-center the bunny (centroid at the origin).
+    pcd0 = read_ply(ROOT / cfg.ply_path)
+    pcd0 = scale_to_cube(pcd0, cfg.scale_cube_size)
+    pcd0 -= pcd0.mean(axis=0)
+
+    stereo_cam = StereoCameraModel(cfg.stereo_camera_config)
+
+    output_data = []
+    total = (
+        len(cfg.num_points)
+        * len(cfg.camera_distances)
+        * len(cfg.thetas)
+        * cfg.num_trials
+    )
+    index = 0
+    with tqdm(total=total, desc="POSE_REG") as pbar:
+        for n in cfg.num_points:
+            for distance in cfg.camera_distances:
+                for theta in cfg.thetas:
+                    # Generate the problem instance for this configuration.
+                    rng = set_seed(cfg.seed + index)
+                    kpt_3D_src, kpt_3D_trg, inv_cov_weights, T_w_c = pose_reg_setup(
+                        cfg, pcd0, n, distance, theta, stereo_cam, rng
+                    )
+                    # Ground-truth registration solution T_src_trg (world <- camera).
+                    T_gt = T_w_c
+
+                    # Set up the registration block
+                    registration_block = PointCloudRegistrationBlock(
+                        config=cfg.registration_config,
+                        keypoints_3D_src=kpt_3D_src[:3, :],  # (3, n)
+                        keypoints_3D_trg=kpt_3D_trg[:3, :],  # (3, n)
+                        inv_cov_weights=inv_cov_weights,  # (n, 3, 3)
+                    )
+
+                    # Reference solve from the ground truth to obtain the
+                    # (presumed) globally optimal cost for this instance.
+                    T_ref, info_ref = registration_block.solve_sdp(
+                        verbose=cfg.registration_config.verbose
+                    )
+                    cost_sdp = info_ref["cost"]
+                    time_sdp = info_ref["time"]
+
+                    for trial in range(cfg.num_trials):
+                        index += 1
+                        # Reset rng for reproducibility across trials.
+                        rng = set_seed(cfg.seed + index)
+
+                        # Initial value for this trial.
+                        T_init, rot_pert, trans_pert = sample_initial_pose(
+                            T_gt,
+                            cfg.init_type,
+                            cfg.init_rot_pert_max,
+                            cfg.init_trans_pert_max,
+                            rng,
+                        )
+
+                        # Solve the factor graph from the initial value.
+                        t1 = time.perf_counter()
+                        T_est, info = registration_block.solve_factor_graph(
+                            T_init, verbose=cfg.registration_config.verbose
+                        )
+                        t2 = time.perf_counter()
+                        t_solver = t2 - t1
+
+                        # Certify the solution.
+                        registration_certified = False
+                        t_certify = np.nan
+                        num_iter_cert = None
+                        if cfg.registration_config.certify:
+                            cert_result = registration_block.certify_solution(T_est)
+                            registration_certified = cert_result.certified
+                            t_certify = cert_result.solver_time
+                            num_iter_cert = cert_result.num_iterations
+
+                        # Errors w.r.t. the ground truth and the reference cost.
+                        rot_error, trans_error = pose_errors(T_est, T_gt)
+                        cost = info["cost"]
+                        global_min = (cost - cost_sdp) / (
+                            1.0 + cost_sdp
+                        ) <= cfg.global_cost_rtol
+
+                        output_data.append(
+                            dict(
+                                num_points=n,
+                                camera_distance=distance,
+                                theta=theta,
+                                trial=trial,
+                                cost=cost,
+                                cost_ref=cost_sdp,
+                                global_min=global_min,
+                                cert_reg=registration_certified,
+                                t_solver=t_solver,
+                                t_certify=t_certify,
+                                num_iter_cert=num_iter_cert,
+                                rot_error=rot_error,
+                                trans_error=trans_error,
+                            )
+                        )
+                        pbar.update(1)
+
+    df = pd.DataFrame(output_data)
+
+    if cfg.save_results:
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M")
+        run_dir = (
+            ROOT / "results" / "pose_registration" / cfg.experiment_name / timestamp
+        )
+        run_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(run_dir / "results.csv", index=False)
+        OmegaConf.save(OmegaConf.structured(cfg), run_dir / "experiment.yaml")
+        print(f"\nSaved results to {run_dir}")
+    else:
+        print("\nExperiment results:")
+        print(df)
+        print("\nCertification results:")
+        print(df[["cost", "global_min", "cert_reg", "num_iter_cert"]])
+
+    # Plot the final problem instance (source cloud + camera frames).
+    if cfg.plot:
+        T_w_c_est = T_est  # T_src_trg == T_w_c for this problem
+        ax = plot_setup(kpt_3D_src, T_w_c, T_w_c_est)
+        if cfg.save_results:
+            fig_path = run_dir / "setup.png"
+            ax.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")
+            print(f"Saved figure to {fig_path}")
+        else:
+            from matplotlib import pyplot as plt
+
+            plt.show()
+
+    return df
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("filename", nargs="?", default="pose_reg_test.yaml")
+    args = parser.parse_args()
+
+    exp_cfg_path = ROOT / "configs" / "pose_registration_experiments" / args.filename
+    exp_config = load_experiment_config(exp_cfg_path)
+    run_experiment(exp_config)
