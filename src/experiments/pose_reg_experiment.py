@@ -100,6 +100,9 @@ class PoseRegExperimentConfig:
             ac_params=AnalyticCenterParamsConfig(verbose=False),
         )
     )
+    # Number of reference SDP solves per problem instance; cost and solve time
+    # are averaged over these.
+    n_sdp_trials: int = 5
 
     # --- Trial parameters (initial values) ---
     # How the initial value is generated for each trial.
@@ -161,7 +164,7 @@ def get_camera_transform(distance: float, theta: float) -> np.ndarray:
     R_w_c = Rotation.from_euler("y", theta).as_matrix()
     # Place the camera so its z axis points at the centroid from ``distance``:
     # the camera center plus ``distance`` times the optical axis is the origin.
-    z_axis_w = R_w_c[:, 2]
+    z_axis_w = np.eye(3)[:, 2]
     camera_center_w = -distance * z_axis_w
     T_w_c = np.eye(4)
     T_w_c[:3, :3] = R_w_c
@@ -316,7 +319,7 @@ def plot_experiment(
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="black", marker=".", label="Source")
+    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="magenta", marker=".", label="Source")
 
     def draw_frame(T, scale, color=None, alpha=1.0, ls="-", lw=1.5):
         """Draw a coordinate frame; RGB axes if ``color`` is None, else one color."""
@@ -335,7 +338,7 @@ def plot_experiment(
             )
 
     # Ground-truth camera frame (RGB axes).
-    draw_frame(T_w_c, scale=0.5)
+    draw_frame(T_w_c, scale=0.5, color="black")
 
     # Per-trial initialization and solution frames.
     if trial_frames is not None:
@@ -344,7 +347,8 @@ def plot_experiment(
                 T_init,
                 scale=0.3,
                 color="green" if certified else "red",
-                alpha=0.3,
+                alpha=1.0,
+                lw=0.4,
             )
             draw_frame(
                 T_est,
@@ -353,22 +357,34 @@ def plot_experiment(
                 alpha=1.0,
             )
 
-    legend_handles = [
-        Line2D([0], [0], color="green", alpha=0.3, label="Init (certified)"),
-        Line2D([0], [0], color="red", alpha=0.3, label="Init (not certified)"),
-        Line2D([0], [0], color="magenta", label="Solution (certified)"),
-        Line2D([0], [0], color="orange", label="Solution (not certified)"),
-    ]
-    ax.legend(handles=legend_handles)
-    ax.set_title("Pose registration setup (RGB axes: GT camera)")
-    ax.set_aspect("equal")
+    # legend_handles = [
+    #     Line2D([0], [0], color="green", alpha=0.3, label="Init (certified)"),
+    #     Line2D([0], [0], color="red", alpha=0.3, label="Init (not certified)"),
+    #     Line2D([0], [0], color="magenta", label="Solution (certified)"),
+    #     Line2D([0], [0], color="orange", label="Solution (not certified)"),
+    # ]
+    # ax.legend(handles=legend_handles)
+    # ax.set_title("Pose registration setup (RGB axes: GT camera)")
     # Remove the axes background (panes) and grid.
     ax.grid(False)
     ax.set_facecolor("none")
     fig.patch.set_alpha(0.0)
+    ax.axis("off")
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.pane.fill = False
         axis.pane.set_edgecolor("none")
+    # Set camera to good vantage point for the bunny (elev, azim) = (30, -60).
+    ax.view_init(elev=54, azim=168, roll=-103)
+
+    # Make the 3D axes fill the whole figure and zoom in so there is no margin.
+    ax.set_aspect("equal")
+    ax.set_position([0, 0, 1, 1])
+    try:
+        # `zoom` was added in matplotlib 3.6; fall back gracefully otherwise.
+        ax.set_box_aspect(None, zoom=1.6)
+    except TypeError:
+        pass
+
     return ax
 
 
@@ -422,12 +438,21 @@ def run_experiment(cfg: PoseRegExperimentConfig):
                     )
 
                     # Reference solve from the ground truth to obtain the
-                    # (presumed) globally optimal cost for this instance.
-                    T_ref, info_ref = registration_block.solve_sdp(
-                        verbose=cfg.registration_config.verbose
-                    )
-                    cost_sdp = info_ref["cost"]
-                    time_sdp = info_ref["time"]
+                    # (presumed) globally optimal cost for this instance,
+                    # averaged over repeated solves.
+                    sdp_costs = []
+                    sdp_times = []
+                    for i in range(cfg.n_sdp_trials + 1):
+                        T_ref, info_ref = registration_block.solve_sdp(
+                            verbose=cfg.registration_config.verbose
+                        )
+                        if i == 0:
+                            # Skip the first trial to avoid any warm-start bias.
+                            continue
+                        sdp_costs.append(info_ref["cost"])
+                        sdp_times.append(info_ref["time"])
+                    cost_sdp = float(np.mean(sdp_costs))
+                    time_sdp = float(np.mean(sdp_times))
 
                     # Track (T_init, T_est, certified) per trial for plotting.
                     trial_frames = []
@@ -482,6 +507,7 @@ def run_experiment(cfg: PoseRegExperimentConfig):
                                 global_min=global_min,
                                 cert_reg=registration_certified,
                                 t_solver=t_solver,
+                                t_sdp=time_sdp,
                                 t_certify=t_certify,
                                 num_iter_cert=num_iter_cert,
                                 rot_error=rot_error,
@@ -524,11 +550,21 @@ def run_experiment(cfg: PoseRegExperimentConfig):
         ax = plot_experiment(kpt_3D_src, T_w_c, trial_frames)
         if cfg.save_results:
             fig_path = run_dir / "setup.png"
-            ax.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")
+            ax.get_figure().savefig(
+                fig_path, dpi=1000, bbox_inches="tight", pad_inches=0
+            )
             print(f"Saved figure to {fig_path}")
         else:
             from matplotlib import pyplot as plt
 
+            # # Callback function to capture real-time values
+            # def on_draw(event):
+            #     print(
+            #         f"Current View -> Elev: {ax.elev:.1f}°, Azim: {ax.azim:.1f}°, Roll: {ax.roll:.1f}°"
+            #     )
+
+            # # Bind the event to the canvas
+            # plt.gcf().canvas.mpl_connect("draw_event", on_draw)
             plt.show()
 
     return df

@@ -1,24 +1,24 @@
 # Test file for pose registration experiments
-experiment_name: pose_reg_test
+experiment_name: distance_sweep
 ply_path: data/bun10k.ply
-save_results: False
+save_results: True
 plot: True
 # Simplified setup 
 num_points: [100]
-camera_distances: [3.0]
-thetas: [0.1]
+camera_distances: [3.0, 5.0, 10.0, 20.0]
+thetas: [0.05]
 add_noise: True
 # Trial setup
-num_trials: 10
+num_trials: 100
 init_type: RANDOM
 # Registration setup
 registration_config:
   certify: True
-  verbose: True
+  verbose: False
   adjust_cost: True
   # Analytic centering parameters
   ac_params:
-    verbose: True
+    verbose: False
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200
     lin_solve_tol: 1e-5
