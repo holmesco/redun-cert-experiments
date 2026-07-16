@@ -255,6 +255,34 @@ def sample_initial_pose(
     return T_init, rot_pert, trans_pert
 
 
+def sample_initial_pose_on_sphere(
+    distance: float, rng: np.random.Generator
+) -> np.ndarray:
+    """Sample an initial camera pose on a sphere around the point cloud.
+
+    The camera center is uniformly distributed on a sphere of radius
+    ``distance`` centered at the cloud centroid (the world origin) and the
+    camera z axis points at the centroid, with a random roll about it.
+
+    Returns ``T_init`` (``T_src_trg``, i.e. the camera pose in the world frame).
+    """
+    # Random location on the sphere.
+    center = rng.normal(size=3)
+    center = distance * center / np.linalg.norm(center)
+    # z axis points at the centroid (origin); y is a random direction
+    # orthogonal to z (random roll) and x completes the right-handed frame.
+    z = -center / np.linalg.norm(center)
+    y = rng.normal(size=3)
+    y = y - (y @ z) * z
+    y = y / np.linalg.norm(y)
+    x = np.cross(y, z)
+
+    T_init = np.eye(4)
+    T_init[:3, :3] = np.column_stack([x, y, z])
+    T_init[:3, 3] = center
+    return T_init
+
+
 def pose_errors(T_est: np.ndarray, T_gt: np.ndarray):
     """Rotation (radians) and translation (norm) errors of ``T_est`` w.r.t. ``T_gt``."""
     T_err = np.linalg.inv(T_est) @ T_gt
@@ -263,39 +291,84 @@ def pose_errors(T_est: np.ndarray, T_gt: np.ndarray):
     return rot_error, trans_error
 
 
-def plot_setup(
-    kpt_3D_src: torch.Tensor, T_w_c: np.ndarray, T_w_c_est: np.ndarray | None = None
+def plot_experiment(
+    kpt_3D_src: torch.Tensor,
+    T_w_c: np.ndarray,
+    trial_frames: list[tuple[np.ndarray, np.ndarray, bool]] | None = None,
 ):
-    """Plot the source cloud together with the true (and estimated) camera frames.
+    """Plot the source cloud, the true camera frame and the per-trial frames.
 
-    Camera axes are drawn as RGB (x, y, z) line segments at the camera center.
+    The ground-truth camera frame is drawn with RGB (x, y, z) axes. For each
+    trial, the initialization frame ``T_init`` is drawn with alpha 0.3 (green if
+    the trial's solution was certified, red otherwise) and the solution frame
+    ``T_est`` is drawn fully opaque (magenta if certified, orange otherwise).
+
+    Args:
+        kpt_3D_src: homogeneous (4, n) source keypoints in the world frame.
+        T_w_c: ground-truth camera pose (4, 4).
+        trial_frames: list of ``(T_init, T_est, certified)`` tuples per trial.
+            Both transforms are ``T_src_trg`` (== camera pose in world frame).
     """
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     pts = kpt_3D_src[:3, :].cpu().numpy().T
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="magenta", s=5, label="Source")
+    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="black", marker=".", label="Source")
 
-    def draw_frame(T, scale, ls):
+    def draw_frame(T, scale, color=None, alpha=1.0, ls="-", lw=1.5):
+        """Draw a coordinate frame; RGB axes if ``color`` is None, else one color."""
         origin = T[:3, 3]
-        for axis_idx, color in enumerate(["red", "green", "blue"]):
+        axis_colors = ["red", "green", "blue"] if color is None else [color] * 3
+        for axis_idx, c in enumerate(axis_colors):
             tip = origin + scale * T[:3, axis_idx]
             ax.plot(
                 [origin[0], tip[0]],
                 [origin[1], tip[1]],
                 [origin[2], tip[2]],
-                color=color,
+                color=c,
+                alpha=alpha,
                 linestyle=ls,
+                linewidth=lw,
             )
 
-    draw_frame(T_w_c, scale=0.5, ls="-")
-    if T_w_c_est is not None:
-        draw_frame(T_w_c_est, scale=0.5, ls="--")
-    ax.set_title("Pose registration setup (solid: GT camera, dashed: estimate)")
-    ax.legend()
+    # Ground-truth camera frame (RGB axes).
+    draw_frame(T_w_c, scale=0.5)
+
+    # Per-trial initialization and solution frames.
+    if trial_frames is not None:
+        for T_init, T_est, certified in trial_frames:
+            draw_frame(
+                T_init,
+                scale=0.3,
+                color="green" if certified else "red",
+                alpha=0.3,
+            )
+            draw_frame(
+                T_est,
+                scale=0.3,
+                color="magenta" if certified else "orange",
+                alpha=1.0,
+            )
+
+    legend_handles = [
+        Line2D([0], [0], color="green", alpha=0.3, label="Init (certified)"),
+        Line2D([0], [0], color="red", alpha=0.3, label="Init (not certified)"),
+        Line2D([0], [0], color="magenta", label="Solution (certified)"),
+        Line2D([0], [0], color="orange", label="Solution (not certified)"),
+    ]
+    ax.legend(handles=legend_handles)
+    ax.set_title("Pose registration setup (RGB axes: GT camera)")
     ax.set_aspect("equal")
+    # Remove the axes background (panes) and grid.
+    ax.grid(False)
+    ax.set_facecolor("none")
+    fig.patch.set_alpha(0.0)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.fill = False
+        axis.pane.set_edgecolor("none")
     return ax
 
 
@@ -356,19 +429,17 @@ def run_experiment(cfg: PoseRegExperimentConfig):
                     cost_sdp = info_ref["cost"]
                     time_sdp = info_ref["time"]
 
+                    # Track (T_init, T_est, certified) per trial for plotting.
+                    trial_frames = []
+
                     for trial in range(cfg.num_trials):
                         index += 1
                         # Reset rng for reproducibility across trials.
                         rng = set_seed(cfg.seed + index)
 
-                        # Initial value for this trial.
-                        T_init, rot_pert, trans_pert = sample_initial_pose(
-                            T_gt,
-                            cfg.init_type,
-                            cfg.init_rot_pert_max,
-                            cfg.init_trans_pert_max,
-                            rng,
-                        )
+                        # Initial value for this trial: random pose on a sphere
+                        # of radius ``distance`` looking at the cloud centroid.
+                        T_init = sample_initial_pose_on_sphere(distance, rng)
 
                         # Solve the factor graph from the initial value.
                         t1 = time.perf_counter()
@@ -387,6 +458,11 @@ def run_experiment(cfg: PoseRegExperimentConfig):
                             registration_certified = cert_result.certified
                             t_certify = cert_result.solver_time
                             num_iter_cert = cert_result.num_iterations
+
+                        # Track the initialization and solution frames.
+                        trial_frames.append(
+                            (T_init.copy(), T_est.copy(), registration_certified)
+                        )
 
                         # Errors w.r.t. the ground truth and the reference cost.
                         rot_error, trans_error = pose_errors(T_est, T_gt)
@@ -431,10 +507,21 @@ def run_experiment(cfg: PoseRegExperimentConfig):
         print("\nCertification results:")
         print(df[["cost", "global_min", "cert_reg", "num_iter_cert"]])
 
+    # Save the tracked frames for the final problem instance.
+    if cfg.save_results and len(trial_frames) > 0:
+        np.savez(
+            run_dir / "frames.npz",
+            T_w_c=T_w_c,
+            T_init=np.stack([f[0] for f in trial_frames]),
+            T_est=np.stack([f[1] for f in trial_frames]),
+            certified=np.array([f[2] for f in trial_frames]),
+        )
+
     # Plot the final problem instance (source cloud + camera frames).
     if cfg.plot:
-        T_w_c_est = T_est  # T_src_trg == T_w_c for this problem
-        ax = plot_setup(kpt_3D_src, T_w_c, T_w_c_est)
+        # T_src_trg == T_w_c for this problem, so init/solution frames are
+        # plotted directly as camera poses in the world frame.
+        ax = plot_experiment(kpt_3D_src, T_w_c, trial_frames)
         if cfg.save_results:
             fig_path = run_dir / "setup.png"
             ax.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")

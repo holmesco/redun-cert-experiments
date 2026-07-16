@@ -1,12 +1,13 @@
 # Test file for pose registration experiments
 experiment_name: pose_reg_test
+ply_path: data/Armadillo.ply
 save_results: False
 plot: True
 # Simplified setup 
-num_points: [100]
-camera_distances: [5.0]
-thetas: [0.0]
-add_noise: False
+num_points: [200]
+camera_distances: [2.0]
+thetas: [0.2]
+add_noise: True
 # Trial setup
 num_trials: 20
 init_type: RANDOM
