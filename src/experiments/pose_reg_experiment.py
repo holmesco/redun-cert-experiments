@@ -190,12 +190,12 @@ def pose_reg_setup(
     (with stereo-camera noise if enabled) and computes the matrix weights via
     ``get_inv_cov_weights``.
 
-    Returns ``(kpt_3D_src, kpt_3D_trg, inv_cov_weights, T_w_c)`` where the
-    keypoints are homogeneous (4, n) tensors, the weights have shape
-    (n, 3, 3) and ``T_w_c`` is the ground-truth camera pose. The ground-truth
-    registration solution (``T_src_trg``) is ``T_w_c`` itself, since the source
-    keypoints live in the world frame and the target keypoints in the camera
-    frame.
+    Returns ``(kpt_3D_src, kpt_3D_trg, inv_cov_weights, cov_cam, T_w_c)`` where
+    the keypoints are homogeneous (4, n) tensors, the weights and the
+    (camera-frame) covariances ``cov_cam`` have shape (n, 3, 3) and ``T_w_c`` is
+    the ground-truth camera pose. The ground-truth registration solution
+    (``T_src_trg``) is ``T_w_c`` itself, since the source keypoints live in the
+    world frame and the target keypoints in the camera frame.
     """
     # Set default datatype to float32 for PyTorch tensors.
     torch.set_default_dtype(torch.float32)
@@ -222,12 +222,19 @@ def pose_reg_setup(
         kpt_3D_trg[:3, :] = kpt_3D_trg[:3, :] + L.bmm(noise).squeeze(2).T
 
     # Matrix weights from the measured (noisy) camera-frame keypoints, matching
-    # the pose registration code in StereoPipeline.forward.
-    inv_cov_weights, _ = get_inv_cov_weights(
+    # the pose registration code in StereoPipeline.forward. ``cov_cam`` is the
+    # (un-normalized) covariance of each keypoint in the camera frame.
+    inv_cov_weights, cov_cam = get_inv_cov_weights(
         kpt_3D_trg.unsqueeze(0), valid, stereo_cam, normalize_weights=True
     )
 
-    return kpt_3D_src, kpt_3D_trg, inv_cov_weights.squeeze(0), T_w_c
+    return (
+        kpt_3D_src,
+        kpt_3D_trg,
+        inv_cov_weights.squeeze(0),
+        cov_cam.squeeze(0),
+        T_w_c,
+    )
 
 
 def sample_initial_pose(
@@ -301,6 +308,10 @@ def plot_experiment(
     kpt_3D_src: torch.Tensor,
     T_w_c: np.ndarray,
     trial_frames: list[tuple[np.ndarray, np.ndarray, bool]] | None = None,
+    kpt_3D_trg: torch.Tensor | None = None,
+    cov_cam: torch.Tensor | None = None,
+    n_std: float = 3.0,
+    zoom_to_points: bool = False,
 ):
     """Plot the source cloud, the true camera frame and the per-trial frames.
 
@@ -314,6 +325,16 @@ def plot_experiment(
         T_w_c: ground-truth camera pose (4, 4).
         trial_frames: list of ``(T_init, T_est, certified)`` tuples per trial.
             Both transforms are ``T_src_trg`` (== camera pose in world frame).
+        kpt_3D_trg: homogeneous (4, n) target keypoints in the camera frame. If
+            given, they are mapped back into the world frame (via ``T_w_c``) and
+            plotted in blue.
+        cov_cam: (n, 3, 3) per-keypoint measurement covariances in the camera
+            frame. If given, a translucent covariance ellipsoid (at ``n_std``
+            standard deviations) is drawn around each source keypoint, rotated
+            into the world frame.
+        n_std: number of standard deviations for the covariance ellipsoids.
+        zoom_to_points: if True, the axis limits are tightened to a cube around
+            the source (and target) keypoints, zooming past the camera frames.
     """
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -322,7 +343,55 @@ def plot_experiment(
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c="magenta", marker=".", label="Source")
+    ax.scatter(
+        pts[:, 0], pts[:, 1], pts[:, 2], c="magenta", marker=".", s=3, label="Source"
+    )
+
+    # Covariance ellipsoids around the source points, rotated into the world
+    # frame (the covariances are expressed in the camera frame).
+    if cov_cam is not None:
+        R_w_c = T_w_c[:3, :3]
+        cov = cov_cam.detach().cpu().numpy()
+        # Unit sphere mesh, reused for every ellipsoid.
+        u = np.linspace(0, 2 * np.pi, 16)
+        v = np.linspace(0, np.pi, 16)
+        sphere = np.stack(
+            [
+                np.outer(np.cos(u), np.sin(v)),
+                np.outer(np.sin(u), np.sin(v)),
+                np.outer(np.ones_like(u), np.cos(v)),
+            ],
+            axis=-1,
+        )  # (16, 16, 3)
+        for center, cov_i in zip(pts, cov):
+            cov_w = R_w_c @ cov_i @ R_w_c.T
+            eigvals, eigvecs = np.linalg.eigh(cov_w)
+            eigvals = np.clip(eigvals, 0.0, None)
+            radii = n_std * np.sqrt(eigvals)
+            ell = sphere @ (eigvecs * radii).T + center
+            ax.plot_surface(
+                ell[..., 0],
+                ell[..., 1],
+                ell[..., 2],
+                color="blue",
+                alpha=0.1,
+                linewidth=0,
+                shade=False,
+            )
+
+    # Target keypoints mapped back into the world frame (blue).
+    trg_w = None
+    if kpt_3D_trg is not None:
+        trg_w = (T_w_c @ kpt_3D_trg.detach().cpu().numpy())[:3, :].T
+        ax.scatter(
+            trg_w[:, 0],
+            trg_w[:, 1],
+            trg_w[:, 2],
+            c="blue",
+            marker="*",
+            s=3,
+            label="Target",
+        )
 
     def draw_frame(T, scale, color=None, alpha=1.0, ls="-", lw=1.5):
         """Draw a coordinate frame; RGB axes if ``color`` is None, else one color."""
@@ -384,9 +453,32 @@ def plot_experiment(
     ax.set_position([0, 0, 1, 1])
     try:
         # `zoom` was added in matplotlib 3.6; fall back gracefully otherwise.
-        ax.set_box_aspect(None, zoom=1.6)
+        # When zooming to the points, fill more of the figure so the data cube
+        # reaches the figure edges instead of leaving a wide margin.
+        ax.set_box_aspect(None, zoom=2.0 if zoom_to_points else 1.6)
     except TypeError:
         pass
+
+    # Optionally tighten the limits to a cube around the src/trg keypoints and
+    # the estimated (solution) frames, zooming past the far-away GT/init frames
+    # while keeping the same view.
+    if zoom_to_points:
+        zoom_pts = [pts]
+        if trg_w is not None:
+            zoom_pts.append(trg_w)
+        # Include gt camera frame
+        origin = T_w_c[:3, 3]
+        tips = origin + 0.3 * T_w_c[:3, :3].T
+        zoom_pts.append(origin[None, :])
+        zoom_pts.append(tips)
+        zoom_pts = np.vstack(zoom_pts)
+        mins, maxs = zoom_pts.min(axis=0), zoom_pts.max(axis=0)
+        center = 0.5 * (mins + maxs)
+        # Equal cube half-extent (tight, to preserve aspect).
+        half = 0.5 * (maxs - mins).max()
+        ax.set_xlim(center[0] - half, center[0] + half)
+        ax.set_ylim(center[1] - half, center[1] + half)
+        ax.set_zlim(center[2] - half, center[2] + half)
 
     return ax
 
@@ -426,8 +518,8 @@ def run_experiment(cfg: PoseRegExperimentConfig):
                 for theta in cfg.thetas:
                     # Generate the problem instance for this configuration.
                     rng = set_seed(cfg.seed + index)
-                    kpt_3D_src, kpt_3D_trg, inv_cov_weights, T_w_c = pose_reg_setup(
-                        cfg, pcd0, n, distance, theta, stereo_cam, rng
+                    kpt_3D_src, kpt_3D_trg, inv_cov_weights, cov_cam, T_w_c = (
+                        pose_reg_setup(cfg, pcd0, n, distance, theta, stereo_cam, rng)
                     )
                     # Ground-truth registration solution T_src_trg (world <- camera).
                     T_gt = T_w_c
@@ -550,13 +642,34 @@ def run_experiment(cfg: PoseRegExperimentConfig):
     if cfg.plot:
         # T_src_trg == T_w_c for this problem, so init/solution frames are
         # plotted directly as camera poses in the world frame.
-        ax = plot_experiment(kpt_3D_src, T_w_c, trial_frames)
+        ax = plot_experiment(
+            kpt_3D_src,
+            T_w_c,
+            trial_frames,
+            kpt_3D_trg=kpt_3D_trg,
+            cov_cam=cov_cam,
+        )
+        # Second plot: same view, zoomed onto the src/trg keypoints.
+        ax_zoom = plot_experiment(
+            kpt_3D_src,
+            T_w_c,
+            trial_frames,
+            kpt_3D_trg=kpt_3D_trg,
+            cov_cam=cov_cam,
+            zoom_to_points=True,
+        )
         if cfg.save_results:
             fig_path = run_dir / "setup.png"
             ax.get_figure().savefig(
                 fig_path, dpi=1000, bbox_inches="tight", pad_inches=0
             )
             print(f"Saved figure to {fig_path}")
+
+            fig_zoom_path = run_dir / "setup_zoom.png"
+            ax_zoom.get_figure().savefig(
+                fig_zoom_path, dpi=1000, bbox_inches="tight", pad_inches=0
+            )
+            print(f"Saved figure to {fig_zoom_path}")
         else:
             from matplotlib import pyplot as plt
 
