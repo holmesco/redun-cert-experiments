@@ -103,6 +103,9 @@ class PoseRegExperimentConfig:
     # Number of reference SDP solves per problem instance; cost and solve time
     # are averaged over these.
     n_sdp_trials: int = 5
+    # Number of warmup SDP solves per problem instance; these are skipped when
+    # computing the average cost and solve time to avoid any warm-start bias.
+    n_sdp_warmup: int = 3
 
     # --- Trial parameters (initial values) ---
     # How the initial value is generated for each trial.
@@ -442,12 +445,12 @@ def run_experiment(cfg: PoseRegExperimentConfig):
                     # averaged over repeated solves.
                     sdp_costs = []
                     sdp_times = []
-                    for i in range(cfg.n_sdp_trials + 1):
+                    for i in range(cfg.n_sdp_trials + cfg.n_sdp_warmup):
                         T_ref, info_ref = registration_block.solve_sdp(
                             verbose=cfg.registration_config.verbose
                         )
-                        if i == 0:
-                            # Skip the first trial to avoid any warm-start bias.
+                        if i < cfg.n_sdp_warmup:
+                            # Skip the first trials to avoid any warm-start bias.
                             continue
                         sdp_costs.append(info_ref["cost"])
                         sdp_times.append(info_ref["time"])

@@ -5,7 +5,7 @@ save_results: True
 plot: True
 # Simplified setup 
 num_points: [100]
-camera_distances: [3.0, 5.0, 10.0, 20.0]
+camera_distances: [3.0, 5.0, 10.0]
 thetas: [0.05]
 add_noise: True
 # Trial setup

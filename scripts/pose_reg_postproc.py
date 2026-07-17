@@ -133,20 +133,20 @@ def certifier_summary_by_distance(
 
     counts = df.groupby(distance_col)[["TP", "FP", "TN", "FN"]].sum()
     n = counts.sum(axis=1)
-    table = counts.div(n, axis=0) * 100.0
-    table["N"] = n
+    table_cert = counts.div(n, axis=0) * 100.0
 
     # The SDP is solved once per instance and its time repeated across that
     # instance's trials, so this is a trial-weighted mean over the instances.
+    table_time = pd.DataFrame()
     if "t_sdp" in df:
-        table["t_sdp"] = df.groupby(distance_col)["t_sdp"].mean() * 1000
+        table_time["t_sdp"] = df.groupby(distance_col)["t_sdp"].mean() * 1000
 
     # Mean certification time, split by the certifier's own verdict.
     t_cert = df.groupby([distance_col, pred.rename("cert_reg")])["t_certify"].mean()
     t_cert = t_cert.unstack("cert_reg") * 1000  # convert to ms
-    table["t_cert_true"] = t_cert.get(True)
-    table["t_cert_false"] = t_cert.get(False)
-    return table
+    table_time["t_cert_true"] = t_cert.get(True)
+    table_time["t_cert_false"] = t_cert.get(False)
+    return table_cert, table_time
 
 
 def pose_reg_results(experiment_name: Optional[str] = None, timestamp=None):
@@ -154,11 +154,10 @@ def pose_reg_results(experiment_name: Optional[str] = None, timestamp=None):
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
 
     print("\nCertifier summary by camera distance:")
-    table = certifier_summary_by_distance(df)
-    table.drop(columns=["N"], inplace=True)  # N is not needed in the printed table
-    print(table.to_string(float_format="%.1f"))
-    print(table.to_latex(float_format="%.1f"))
-    return table
+    tables = certifier_summary_by_distance(df)
+    for table in tables:
+        print(table.to_string(float_format="%.1f"))
+        print(table.to_latex(float_format="%.1f"))
 
 
 if __name__ == "__main__":
