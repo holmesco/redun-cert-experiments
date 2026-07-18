@@ -95,8 +95,13 @@ class StereoPipelineOutput:
     # Certification flags
     data_association_certified: bool = False
     registration_certified: bool = False
+    # Certification solver times (seconds). None if certification was not run.
+    data_association_cert_time: float | None = None
+    registration_cert_time: float | None = None
     # Inlier count
     num_inliers: int = 0
+    # Valid keypoint count
+    num_valid: int = 0
     # Additional information from the registration block, such as the number of inliers, etc.
     registration_info: dict = None
     # Debug information for the stereo pipeline.
@@ -190,10 +195,12 @@ class StereoPipeline:
             print(f"Number of inliers after data association: {torch.sum(inliers)}")
         # Call 3D data association certifier module
         data_association_certified = False
+        data_association_cert_time = None
         cert_result_da = None
         if self.config.data_association_config.certify:
-            cert_result_da= self.data_association.certify_solution(soln)
+            cert_result_da = self.data_association.certify_solution(soln)
             data_association_certified = cert_result_da.certified
+            data_association_cert_time = cert_result_da.solver_time
         if self.config.verbose:
             print(f"Data association certification result: {cert_result_da}")
         # Restrict points to inliers
@@ -225,20 +232,25 @@ class StereoPipeline:
 
         # Certify solution
         registration_certified = False
+        registration_cert_time = None
         cert_result_reg = None
         if self.config.registration_config.certify:
             cert_result_reg = registration_block.certify_solution(T_est)
             if self.config.verbose:
                 print(f"Certification result: {cert_result_reg}")
             registration_certified = cert_result_reg.certified
+            registration_cert_time = cert_result_reg.solver_time
 
         # Generate standard output
         output = StereoPipelineOutput(
             relative_transform=T_est,  # (4, 4)
             data_association_certified=data_association_certified,
             registration_certified=registration_certified,
+            data_association_cert_time=data_association_cert_time,
+            registration_cert_time=registration_cert_time,
             registration_info=info,
             num_inliers=torch.sum(inliers).item(),
+            num_valid=torch.sum(valid).item(),
         )
 
         # Generate debug output if requested

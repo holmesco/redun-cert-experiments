@@ -20,7 +20,11 @@ from scipy.spatial.transform import Rotation, RigidTransform
 import cv2
 
 from utils.stereo_camera_model import get_disparity, StereoCameraConfig
-from utils.raft_stereo_interface import build_raft_model, run_raft_stereo, raft_stereo_preproc_img
+from utils.raft_stereo_interface import (
+    build_raft_model,
+    run_raft_stereo,
+    raft_stereo_preproc_img,
+)
 
 
 @dataclass(frozen=True)
@@ -377,23 +381,33 @@ class EurocPreprocess:
             index0 = self.gt_data.timestamps_to_index.get(timestamp0)
             if index0 is None:
                 i0 = int(np.searchsorted(ts, timestamp0))
-                if i0 > 0 and (i0 == len(ts) or abs(ts[i0 - 1] - timestamp0) <= abs(ts[i0] - timestamp0)):
+                if i0 > 0 and (
+                    i0 == len(ts)
+                    or abs(ts[i0 - 1] - timestamp0) <= abs(ts[i0] - timestamp0)
+                ):
                     i0 -= 1
                 index0 = i0
 
             index1 = self.gt_data.timestamps_to_index.get(timestamp1)
             if index1 is None:
                 i1 = int(np.searchsorted(ts, timestamp1))
-                if i1 > 0 and (i1 == len(ts) or abs(ts[i1 - 1] - timestamp1) <= abs(ts[i1] - timestamp1)):
+                if i1 > 0 and (
+                    i1 == len(ts)
+                    or abs(ts[i1 - 1] - timestamp1) <= abs(ts[i1] - timestamp1)
+                ):
                     i1 -= 1
                 index1 = i1
         else:
             index0 = self.gt_data.timestamps_to_index.get(timestamp0)
             index1 = self.gt_data.timestamps_to_index.get(timestamp1)
             if index0 is None:
-                raise KeyError(f"timestamp0 {timestamp0} not found in groundtruth data.")
+                raise KeyError(
+                    f"timestamp0 {timestamp0} not found in groundtruth data."
+                )
             if index1 is None:
-                raise KeyError(f"timestamp1 {timestamp1} not found in groundtruth data.")
+                raise KeyError(
+                    f"timestamp1 {timestamp1} not found in groundtruth data."
+                )
 
         T_rs = self.gt_data.T_rs
         if index0 < 0 or index0 >= len(T_rs):
@@ -464,7 +478,7 @@ class EurocPreprocess:
             img0, img1 = self.get_image_at_timestamp(timestamp, rectify=True)
             if use_raft:
                 # Convert images to torch tensors and run RAFT-Stereo
-                img0_tensor =raft_stereo_preproc_img(img0, device=device)
+                img0_tensor = raft_stereo_preproc_img(img0, device=device)
                 img1_tensor = raft_stereo_preproc_img(img1, device=device)
                 disparity, proc_time = run_raft_stereo(model, img0_tensor, img1_tensor)
                 proc_times.append(proc_time)

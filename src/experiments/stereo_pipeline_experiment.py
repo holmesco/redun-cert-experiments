@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Tuple, List
 from pathlib import Path
@@ -24,7 +24,7 @@ from stereo_loc.EurocPreprocess import EurocPreprocess
 from stereo_loc.StereoPipeline import StereoPipeline, StereoPipelineConfig, load_config
 from stereo_loc.EurocDataloader import EurocDataset
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 default_pipeline_cfg_path = (
     ROOT / "configs" / "stereo_pipeline" / "stereo_pipeline_default.yaml"
 )
@@ -44,8 +44,9 @@ class StereoPipelineExperimentConfig:
     override_path: Path | None = None
     # Path to the dataset to be used for the experiment
     dataset_path: Path | None = None
-    # Interval between frames in the dataset for registration
-    frame_interval: int = 1
+    # Intervals between frames in the dataset for registration. The experiment is
+    # run (with a freshly defined data loader) for each frame interval.
+    frame_interval: List[int] = field(default_factory=lambda: [1])
     # Limits on the indices of the dataset to be used for the experiment (inclusive). If None, use the entire dataset.
     index_bounds: Tuple[int, int] | None = None
     # Method for initializing the pose for the registration algorithm
@@ -60,6 +61,13 @@ class StereoPipelineExperimentConfig:
     num_samples: int | None = None
     # Plotting options for visualizing the results
     plot: bool = False
+    # Sweep bounds for the invariant noise thresholds. The multiplier is applied to
+    # the data association invariant_sigma / invariant_epsilon, and the experiment
+    # is run for each multiplier value.
+    invariant_mult_min: float = 1.0
+    invariant_mult_max: float = 1.0
+    # Number of values for the threshold multiplier to sweep over (log spaced between min and max).
+    invariant_mult_num: int = 1
 
 
 def load_experiment_config(config_path: Path) -> StereoPipelineExperimentConfig:
@@ -105,9 +113,8 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
     torch.manual_seed(cfg.random_seed)
     torch.cuda.manual_seed_all(cfg.random_seed)
 
-    # Load Dataset
+    # Load dataset preprocessor (frame-interval independent)
     euroc_preprocess = EurocPreprocess(ROOT / cfg.dataset_path)
-    euroc_dataset = EurocDataset(euroc_preprocess, frame_interval=cfg.frame_interval)
     # Load default configuration
     pipeline_cfg = load_config(default_pipeline_cfg_path)
     # Load any overrides specified in the experiment config
@@ -118,65 +125,118 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
     pipeline_cfg.debug = cfg.plot
     # Initialize the stereo pipeline
     pipeline = StereoPipeline(pipeline_cfg)
-    # Restrict to bounds if specified
-    if cfg.index_bounds is not None:
-        start, end = cfg.index_bounds
-        dataset = Subset(euroc_dataset, range(start, end + 1))
-    else:
-        dataset = euroc_dataset
-    # Create a DataLoader for batch processing
-    dataloader = DataLoader(
-        dataset,
-        batch_size=None,
-        batch_sampler=None,
-        num_workers=0,
-        shuffle=cfg.shuffle,
+    # Base invariant values, scaled by each invariant multiplier below.
+    base_invariant_sigma = pipeline_cfg.data_association_config.invariant_sigma
+    base_invariant_epsilon = pipeline_cfg.data_association_config.invariant_epsilon
+
+    # Generate array of multiplier values for the invariant values (log spaced).
+    invariant_mults = np.logspace(
+        np.log10(cfg.invariant_mult_min),
+        np.log10(cfg.invariant_mult_max),
+        cfg.invariant_mult_num,
     )
-    if cfg.num_samples is not None:
-        dataloader = islice(dataloader, cfg.num_samples)
+
     # Check device
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Run the experiment
+    # Run the experiment, sweeping over frame intervals and invariant multipliers.
     output_data = []
-    for data in tqdm(dataloader, total=cfg.num_samples, desc="Processing frames"):
-        if data is None:
-            continue  # Skip if the collate function returned None
+    for frame_interval in cfg.frame_interval:
+        # Redefine the dataset / data loader for this frame interval.
+        euroc_dataset = EurocDataset(euroc_preprocess, frame_interval=frame_interval)
+        # Restrict to bounds if specified
+        if cfg.index_bounds is not None:
+            start, end = cfg.index_bounds
+            dataset = Subset(euroc_dataset, range(start, end + 1))
         else:
-            idx, timestep, time_interval, img0_L, img1_L, disp0, disp1, T_src_trg_gt = (
-                data
-            )
-        # Add batch dimension and send to device
-        images = [
-            img0_L.unsqueeze(0).to(device),
-            img1_L.unsqueeze(0).to(device),
-        ]
-        disp0 = disp0.unsqueeze(0).to(device)
-        disp1 = disp1.unsqueeze(0).to(device)
-        # Get pose initialization
-        T_init = get_pose_initialization(cfg.pose_init, T_src_trg_gt)
-        # Run model
-        output = pipeline.forward(
-            images=images,
-            disparities=[disp0, disp1],
-            T_init=T_init,  # initial guess for the relative transform
+            dataset = euroc_dataset
+        # Create a DataLoader for batch processing
+        dataloader = DataLoader(
+            dataset,
+            batch_size=None,
+            batch_sampler=None,
+            num_workers=0,
+            shuffle=cfg.shuffle,
         )
-        # Check that the estimated transform is close to the ground truth
-        T_src_trg = Transformation(T_ba=output.relative_transform)
-        T_src_trg_gt = Transformation(T_ba=T_src_trg_gt)
 
-        # Store results
-        output_data.append(
-            dict(
-                index=idx,
-                timestep=timestep,
-                time_interval=time_interval,
-                xi_est=T_src_trg.vec(),
-                xi_gt=T_src_trg_gt.vec(),
-                cert_da=output.data_association_certified,
-                cert_reg=output.registration_certified,
-                num_inliers=output.num_inliers,
+        for invariant_mult in invariant_mults:
+            # Reset CLIPPER using the scaled invariant values for this multiplier.
+            pipeline.data_association.set_clipper(
+                invariant_sigma=base_invariant_sigma * invariant_mult,
+                invariant_epsilon=base_invariant_epsilon * invariant_mult,
             )
-        )
+            # Restrict the number of samples per run if requested (islice yields a
+            # one-shot iterator, so it is rebuilt for every sweep configuration).
+            frames = (
+                islice(dataloader, cfg.num_samples)
+                if cfg.num_samples is not None
+                else dataloader
+            )
+            for data in tqdm(
+                frames,
+                total=cfg.num_samples,
+                desc=f"frame_interval={frame_interval}, inv_mult={invariant_mult:.3g}",
+            ):
+                if data is None:
+                    continue  # Skip if the collate function returned None
+                else:
+                    (
+                        idx,
+                        timestep,
+                        time_interval,
+                        img0_L,
+                        img1_L,
+                        disp0,
+                        disp1,
+                        T_src_trg_gt,
+                    ) = data
+                # Add batch dimension and send to device
+                images = [
+                    img0_L.unsqueeze(0).to(device),
+                    img1_L.unsqueeze(0).to(device),
+                ]
+                disp0 = disp0.unsqueeze(0).to(device)
+                disp1 = disp1.unsqueeze(0).to(device)
+                # Get pose initialization
+                T_init = get_pose_initialization(cfg.pose_init, T_src_trg_gt)
+                # Run model
+                output = pipeline.forward(
+                    images=images,
+                    disparities=[disp0, disp1],
+                    T_init=T_init,  # initial guess for the relative transform
+                )
+                # Check that the estimated transform is close to the ground truth
+                T_src_trg = Transformation(T_ba=output.relative_transform)
+                T_src_trg_gt = Transformation(T_ba=T_src_trg_gt)
+                T_error = T_src_trg * T_src_trg_gt.inverse()
+                err_trans = np.linalg.norm(T_error.r_ab_inb())
+                err_rot = np.linalg.norm(
+                    Rotation.from_matrix(T_error.C_ba()).as_rotvec()
+                )
+                delta_trans = np.linalg.norm(T_src_trg_gt.r_ab_inb())
+                delta_rot = np.linalg.norm(
+                    Rotation.from_matrix(T_src_trg_gt.C_ba()).as_rotvec()
+                )
+
+                # Store results
+                output_data.append(
+                    dict(
+                        index=idx,
+                        frame_interval=frame_interval,
+                        inv_mult=invariant_mult,
+                        timestep=timestep,
+                        time_interval=time_interval,
+                        err_trans=err_trans,
+                        err_rot=err_rot,
+                        delta_rot=delta_rot,
+                        delta_trans=delta_trans,
+                        cert_da=output.data_association_certified,
+                        cert_reg=output.registration_certified,
+                        cert_time_da=output.data_association_cert_time,
+                        cert_time_reg=output.registration_cert_time,
+                        num_inliers=output.num_inliers,
+                        num_valid=output.num_valid,
+                    )
+                )
 
     if cfg.plot:
         # Retrieve 3D keypoints and inliers/outliers
@@ -240,7 +300,7 @@ def plot_pointclouds(
         kpt_3D_0[0, inliers],
         kpt_3D_0[1, inliers],
         kpt_3D_0[2, inliers],
-        c="blue",
+        c="magenta",
         s=3,
         label="frame 0",
         alpha=0.7,
@@ -250,7 +310,7 @@ def plot_pointclouds(
         kpt_3D_2[0, inliers],
         kpt_3D_2[1, inliers],
         kpt_3D_2[2, inliers],
-        c="red",
+        c="blue",
         s=3,
         alpha=0.7,
         label="inliers (frame 1)",
@@ -260,7 +320,7 @@ def plot_pointclouds(
             kpt_3D_0[0, outlier_mask],
             kpt_3D_0[1, outlier_mask],
             kpt_3D_0[2, outlier_mask],
-            c="red",
+            c="magenta",
             s=3,
             alpha=0.7,
             label="outliers (frame 1)",
@@ -269,7 +329,7 @@ def plot_pointclouds(
             kpt_3D_2[0, outlier_mask],
             kpt_3D_2[1, outlier_mask],
             kpt_3D_2[2, outlier_mask],
-            c="red",
+            c="blue",
             s=3,
             alpha=0.7,
             label="outliers (frame 1)",
@@ -288,12 +348,18 @@ def plot_pointclouds(
                 alpha=0.5,
             )
 
-    ax.set_title(title)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
+    # ax.set_title(title)
+    # ax.set_xlabel("x")
+    # ax.set_ylabel("y")
+    # ax.set_zlabel("z")
     ax.set_aspect("equal", adjustable="box")
-    ax.legend()
+    # No Background
+    ax.set_facecolor("none")
+    fig = plt.gcf()
+    fig.patch.set_alpha(0.0)
+    ax.axis("off")
+    ax.grid(False)
+    ax.view_init(elev=-90, azim=90, roll=180)
 
     return ax
 
