@@ -226,6 +226,7 @@ def machine_hall_summary(df: pd.DataFrame) -> pd.DataFrame:
         .agg(
             avg_time_interval=("time_interval", "mean"),
             avg_num_inliers=("num_inliers", "mean"),
+            avg_num_assoc=("num_valid", "mean"),
             avg_outlier_rate=("outlier_ratio", "mean"),
             avg_err_trans=("err_trans", "mean"),
             avg_err_rot_deg=("err_rot_deg", "mean"),
@@ -300,58 +301,62 @@ def machine_hall_runtime_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def machine_hall_results():
-    """Load and summarise the Machine Hall (MH01e_clipper_reduced) results."""
-    df = load_results(experiment_name="MH01e_clipper_reduced", timestamp="latest")
+    """Load and summarise the Machine Hall (MH01e_clipper) results."""
+    df = load_results(experiment_name="MH01e_clipper", timestamp="latest")
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
 
     summary = machine_hall_summary(df)
-    print("\nMachine Hall summary (per frame interval):")
-    print(
-        summary.to_string(
-            index=False,
-            formatters={
-                "avg_time_interval": "{:.2f}".format,
-                "avg_num_inliers": "{:.1f}".format,
-                "avg_outlier_rate": "{:.1f}%".format,
-                "avg_err_trans": "{:.4f}".format,
-                "avg_err_rot_deg": "{:.3f}".format,
-                "da_cert_rate": "{:.1f}%".format,
-                "reg_cert_rate": "{:.1f}%".format,
-            },
-        )
+    summary_kwargs = dict(
+        index=False,
+        formatters={
+            "avg_time_interval": "{:.2f}".format,
+            "avg_num_inliers": "{:.1f}".format,
+            "avg_num_assoc": "{:.1f}".format,
+            "avg_outlier_rate": "{:.1f}".format,
+            "avg_err_trans": "{:.4f}".format,
+            "avg_err_rot_deg": "{:.3f}".format,
+            "da_cert_rate": "{:.1f}".format,
+            "reg_cert_rate": "{:.1f}".format,
+        },
     )
+    print("\nMachine Hall summary (per frame interval):")
+    print(summary.to_string(**summary_kwargs))
+    print("\nMachine Hall summary (LaTeX):")
+    print(summary.to_latex(**summary_kwargs))
 
     errors = machine_hall_error_summary(df)
-    print("\nPose error split by (cert_da AND cert_reg):")
-    print(
-        errors.to_string(
-            index=False,
-            formatters={
-                "avg_time_interval": "{:.4f}".format,
-                **{
-                    c: "{:.6f}".format
-                    for c in errors.columns
-                    if c.startswith(("err_trans", "err_rot_deg"))
-                },
+    errors_kwargs = dict(
+        index=False,
+        formatters={
+            "avg_time_interval": "{:.4f}".format,
+            **{
+                c: "{:.6f}".format
+                for c in errors.columns
+                if c.startswith(("err_trans", "err_rot_deg"))
             },
-        )
+        },
     )
+    print("\nPose error split by (cert_da AND cert_reg):")
+    print(errors.to_string(**errors_kwargs))
+    print("\nPose error split by (cert_da AND cert_reg) (LaTeX):")
+    print(errors.to_latex(**errors_kwargs))
 
     runtimes = machine_hall_runtime_summary(df)
-    print("\nCertification runtimes split by (cert_da AND cert_reg):")
-    print(
-        runtimes.to_string(
-            index=False,
-            formatters={
-                "avg_time_interval": "{:.4f}".format,
-                **{
-                    c: "{:.1f}".format
-                    for c in runtimes.columns
-                    if c.startswith(("cert_time_da_ms", "cert_time_reg_ms"))
-                },
+    runtimes_kwargs = dict(
+        index=False,
+        formatters={
+            "avg_time_interval": "{:.4f}".format,
+            **{
+                c: "{:.1f}".format
+                for c in runtimes.columns
+                if c.startswith(("cert_time_da_ms", "cert_time_reg_ms"))
             },
-        )
+        },
     )
+    print("\nCertification runtimes split by (cert_da AND cert_reg):")
+    print(runtimes.to_string(**runtimes_kwargs))
+    print("\nCertification runtimes split by (cert_da AND cert_reg) (LaTeX):")
+    print(runtimes.to_latex(**runtimes_kwargs))
     return summary, errors, runtimes
 
 

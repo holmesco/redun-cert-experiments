@@ -1,9 +1,9 @@
-experiment_name: "test"
+experiment_name: "test_clipper"
 dataset_path: "data/Euroc/MH_01_easy"
 index_bounds: [2000,2000]
 shuffle: False
 num_samples: 1
 override_path: "configs/stereo_pipeline/clipper_overrides.yaml"
 frame_interval: [10]
-save_results: False
-plot: True
+save_results: True
+plot: False

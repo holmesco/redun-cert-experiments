@@ -552,14 +552,12 @@ def _run_sdp_solve(M, ac_params_config):
     """
     ac_params = ac_params_config.to_cpp_class()
     certifier = MaxCliqueCertifier(-M, 0.0, ac_params)
-    t0 = time.time()
     result = certifier.solve_sdp_mosek()
-    time_sdp = time.time() - t0
     return {
         "obj_value": result.obj_value,
         "X": np.asarray(result.X),
         "m": certifier.m,
-        "time_sdp": time_sdp,
+        "time_sdp": result.solver_time,
     }
 
 

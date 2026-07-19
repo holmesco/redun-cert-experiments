@@ -1,3 +1,4 @@
+# Runs the sweep experiment over the invariant sigma parameter.
 experiment_name: "invariant_sweep"
 experiment_type: CLIPPER_BENCHMARK
 ply_path: "data/bun10k.ply"
@@ -19,13 +20,18 @@ invariant_mult_min: 0.01
 invariant_mult_max: 100.0
 invariant_mult_num: 30
 # Methods to run
-methods: [CLIPPER, SDP]
+methods: [CLIPPER, SDP, PMC, RANSAC]
 # Data association config
 data_association_config:
   invariant_epsilon: 0.0554
   invariant_sigma: 0.01
+  # Set ransac params
+  ransac_num_sample_pts: 6
+  ransac_num_iterations: 300
+  ransac_inlier_threshold: 0.005 # Overwritten
   certify: True
-  method: CLIPPER
+  # Turn off separate process for SDP (only required for bigger SDPs)
+  spawn_process: False 
   ac_params:
     verbose: True
     lin_solver: MFCG_LRP
@@ -36,11 +42,11 @@ data_association_config:
     max_iter: 10
     # Early stopping local
     early_stop_angle: True
-    max_angle: 5e-5
+    max_angle: 8e-5
     # Perturbation parameters
     perturb_cost: True
     eps_cost: 1e-7
-    perturb_constraints: True
+    perturb_constraints: False
     eps_constr: 1e-7
     # Preconditioner parameters
     lrp_params:

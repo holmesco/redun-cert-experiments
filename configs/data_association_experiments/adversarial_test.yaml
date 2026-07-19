@@ -7,25 +7,26 @@ noise_beta: 0.0554
 noise_sigma: 0.01
 # Sweep parameters
 num_assocs: [200]
-outlier_ratios: [0.45]
-num_trials: 20
+outlier_ratios: [0.2]
+num_trials: 1
 # turn off results storage
 save_results: False
 # bad init
 poor_initialization: False
 # Ground truth transform
-translation: [1.0, 0.1, 0.0]
-rotation: [0.0,0.0,0.0]
+translation: [-1.0, 0.0, 0.0]
+rotation: [0.0,0.5,0.5]
 # Adversarial Transform
-translation_adv: [1.0, -0.1, 0.0]
-rotation_adv: [0.0,0.0,0.0]
+translation_adv: [[1.0, 0.0, 0.0]]
+rotation_adv: [[0.0,0.5,-0.5]]
+methods: [CLIPPER]
 # Turn on plotting.
 plot: True
 # Data association config
 data_association_config:
   method: CLIPPER
-  invariant_epsilon: 0.05
-  invariant_sigma: 0.015
+  invariant_epsilon: 0.01
+  invariant_sigma: 0.002
   certify: True
   ac_params:
     verbose: True

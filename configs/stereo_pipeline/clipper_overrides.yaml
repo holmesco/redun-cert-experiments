@@ -6,10 +6,11 @@ registration_config:
   ac_params:
     verbose: False
 data_association_config:
-  method: PMC
+  method: CLIPPER
   certify: True
   unweighted: False
   invariant_epsilon: 83.1e-2
   invariant_sigma: 15.0e-2
   ac_params:
     verbose: False
+  

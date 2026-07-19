@@ -561,8 +561,8 @@ def plot_associations(
     ax.set_aspect("equal")
     ax.margins(0)
     ax.set_position([0, 0, 1, 1])
-    ax.grid(False)
     # No Background
+    ax.grid(False)
     ax.set_facecolor("none")
     fig.patch.set_alpha(0.0)
     ax.axis("off")
