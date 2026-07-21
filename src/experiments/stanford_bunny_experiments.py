@@ -100,6 +100,8 @@ class BunnyExperimentConfig:
     translation_adv: List[List[float]] | None = None
     # If None, random rotation
     rotation_adv: List[List[float]] | None = None
+    # RANSAC multiplier for threshold (invariant_sigma * ransac_thresh_multiplier)
+    ransac_thresh_multiplier: float = 0.5
 
     # ---  sweep parameters ---
     # Numbers of putative associations to sweep over.
@@ -628,7 +630,9 @@ def run_experiment(cfg: BunnyExperimentConfig):
             )
             # Set RANSAC threshold to invariant_sigma
             # Note: threshold should be at or below 0.5 to return inliers
-            data_association.config.ransac_inlier_threshold = invariant_sigma * 0.5
+            data_association.config.ransac_inlier_threshold = float(
+                invariant_epsilon * cfg.ransac_thresh_multiplier
+            )
             for rho in cfg.outlier_ratios:
                 for m in cfg.num_assocs:
                     for trial in range(cfg.num_trials):
