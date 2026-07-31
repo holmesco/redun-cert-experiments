@@ -25,6 +25,7 @@ methods: [CLIPPER]
 data_association_config:
   invariant_epsilon: 0.0554
   invariant_sigma: 0.01
+  ransac_inlier_threshold: 0.006
   certify: True
   method: CLIPPER
   ac_params:

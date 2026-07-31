@@ -12,6 +12,7 @@ discover those CSVs and read them into (annotated) pandas DataFrames.
 from pathlib import Path
 from typing import List, Optional
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -27,6 +28,12 @@ METHOD_COLORS = {
     "SDP": "#55A868",
     "RANSAC": "#C44E52",
 }
+
+
+def _darken(color, factor: float = 0.8):
+    """Return ``color`` scaled toward black (same hue, lower brightness)."""
+    r, g, b = mcolors.to_rgb(color)
+    return (r * factor, g * factor, b * factor)
 
 
 def _load_run_csv(csv_path: Path) -> pd.DataFrame:
@@ -528,8 +535,7 @@ def certifier_confusion(
 
 
 def plot_invariant_sweep_boxplots(
-    df_clipper: pd.DataFrame,
-    df_sdp: Optional[pd.DataFrame] = None,
+    df: pd.DataFrame,
     save_path: Optional[Path] = None,
     show: bool = True,
 ):
@@ -537,17 +543,20 @@ def plot_invariant_sweep_boxplots(
 
     Produces a three-panel figure (shared ``inv_mult`` x-axis). The invariant
     multiplier is treated as a continuous variable: boxes sit at their actual
-    value on a log-scaled x-axis with a tick at every decade. All box plots show
-    only the CLIPPER method (``df_clipper``). The top panel shows side-by-side box
-    plots of the relative translation and rotation error within each invariant
-    multiplier, split by whether the trial's data association was certified
-    (``cert_da``), on a log y-axis. The middle panel shows the percent of CLIPPER
-    trials certified, overlaid with the SDP solve-success rate (fraction of SDP
-    trials with a valid ``num_inliers``) from ``df_sdp``. The bottom panel shows
-    box plots of the percent inliers found per invariant multiplier.
+    value on a log-scaled x-axis with a tick at every decade. The box plots show
+    only the CLIPPER method; the certified-trials panel covers every method in
+    ``df``. The top panel shows side-by-side box plots of the relative
+    translation and rotation error within each invariant multiplier, split by
+    whether the trial's data association was certified (``cert_da``), on a log y
+    axis. The middle panel shows, per method, the percent of trials certified
+    (solid) and the percent cost-certified against the SDP optimum (dashed,
+    darker), overlaid with the SDP rank-tight rate. The bottom panel shows box
+    plots of the percent inliers found per invariant multiplier.
 
     Returns the created ``(fig, axes)``.
     """
+    df_clipper = df[df["method"] == "CLIPPER"]
+    df_sdp = df[df["method"] == "SDP"]
     cats = sorted(df_clipper["inv_mult"].unique())
 
     # 2x2 layout sized to fit the top third of a standard paper page: it spans
@@ -558,7 +567,7 @@ def plot_invariant_sweep_boxplots(
     )
     (ax_corres, ax_cert), (ax_reg_err, ax_none) = axes
 
-    # --- Top panels: registration error distributions (log scale) ---
+    # --- Registration error distributions (log scale) ---
     # Translation and rotation error are shown in separate panels, with boxes
     # split by whether the trial's data association was certified.
     def _err_by_cert(col, certified):
@@ -589,47 +598,59 @@ def plot_invariant_sweep_boxplots(
     ax_reg_err.legend(handles, [label for label, _, _ in err_series])
     ax_none.set_visible(False)
 
-    # --- Middle panel: percent of trials certified (boolean) ---
-    cert_pct = df_clipper.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
-    ax_cert.plot(cats, cert_pct.values, "-", color="#0C0304", label="CP-Cert Certified")
-    if df_sdp is not None and len(df_sdp):
-        # Cost-certified rate: match each CLIPPER trial to its SDP counterpart and
-        # compute the relative cost gap |(obj_clipper - obj_sdp) / obj_sdp|, then
-        # report the percent of trials whose gap falls below COST_GAP_TOL.
-        COST_GAP_TOL = 1e-4
-        keys = ["outlier_ratio", "num_assoc", "trial", "inv_mult"]
-        merged = df_clipper.merge(
-            df_sdp[keys + ["obj_value"]].rename(columns={"obj_value": "obj_value_sdp"}),
-            on=keys,
-            how="inner",
+    # --- Percent of trials certified (boolean), per method ---
+    # For each method: a solid line shows the percent of trials whose data
+    # association was certified (``cert_da``), and a dashed, slightly darker
+    # line (same hue) shows the percent that were cost-certified -- i.e. whose
+    # objective matches the SDP optimum to within COST_GAP_TOL. Only the solid
+    # per-method lines and the SDP rank-tight line get legend entries (five
+    # total); the dashed cost-certified lines share their method's color.
+    COST_GAP_TOL = 1e-4
+    keys = ["outlier_ratio", "num_assoc", "trial", "inv_mult"]
+    ref = df[df["method"] == "SDP"][keys + ["obj_value"]].rename(
+        columns={"obj_value": "obj_value_sdp"}
+    )
+    merged = df.merge(ref, on=keys, how="inner")
+    merged["cost_cert"] = (
+        (merged["obj_value"] - merged["obj_value_sdp"]) / merged["obj_value_sdp"]
+    ).abs() < COST_GAP_TOL
+
+    for method in sorted(df["method"].unique()):
+        if method == "SDP":
+            continue
+
+        color = METHOD_COLORS.get(method)
+        cert_pct = (
+            df[df["method"] == method]
+            .groupby("inv_mult")["cert_da"]
+            .mean()
+            .mul(100.0)
+            .reindex(cats)
         )
-        merged["cost_gap"] = (
-            (merged["obj_value"] - merged["obj_value_sdp"]) / merged["obj_value_sdp"]
-        ).abs()
+        ax_cert.plot(cats, cert_pct.values, "-", color=color, label=method)
         cost_cert = (
-            merged.groupby("inv_mult")["cost_gap"]
-            .apply(lambda s: (s < COST_GAP_TOL).mean() * 100.0)
+            merged[merged["method"] == method]
+            .groupby("inv_mult")["cost_cert"]
+            .mean()
+            .mul(100.0)
             .reindex(cats)
         )
-        ax_cert.plot(
-            cats, cost_cert.values, "--", color="#DD8452", label="Cost Certified"
-        )
-        # SDP rank-tight rate: fraction of SDP trials rank tight solution, per invariant multiplier.
-        rank_tight = (
-            df_sdp.groupby("inv_mult")["num_inliers"]
-            .apply(lambda s: s.notna().mean() * 100.0)
-            .reindex(cats)
-        )
-        ax_cert.plot(
-            cats, rank_tight.values, ":", color="#8172B3", label="SDP Rank-Tight"
-        )
+        ax_cert.plot(cats, cost_cert.values, "--", color=_darken(color, 0.7))
+
+    # SDP rank-tight rate: fraction of SDP trials with a rank-tight solution.
+    rank_tight = (
+        df_sdp.groupby("inv_mult")["num_inliers"]
+        .apply(lambda s: s.notna().mean() * 100.0)
+        .reindex(cats)
+    )
+    ax_cert.plot(cats, rank_tight.values, "--", color="#8172B3", label="SDP Rank-Tight")
 
     ax_cert.set_ylabel("Percent of Trials (%)")
     # ax_cert.set_ylim(0, 101)
     ax_cert.grid(True, which="both", alpha=0.3)
     ax_cert.legend()
 
-    # --- Bottom panel: percent inliers distribution + certified-trial line ---
+    # --- Percent inliers distribution + certified-trial line ---
     # Two boxes per inv_mult: the CLIPPER and SDP accepted-correspondence rates.
     inlier_series = [
         (
@@ -698,7 +719,7 @@ def plot_invariant_sweep_boxplots(
         handles,
         [
             "Corresp. (Clipper)",
-            "Corresp. (SDP)",
+            "Corresp. (Global)",
             "Recall",
             "Precision",
         ],
@@ -719,22 +740,111 @@ def plot_invariant_sweep_boxplots(
     return fig, axes
 
 
+def plot_invariant_sweep_cost_certified(
+    df: pd.DataFrame,
+    reference_method: str = "SDP",
+    cost_gap_tol: float = 1e-4,
+    save_path: Optional[Path] = None,
+    show: bool = True,
+):
+    """Cost-certified rate per invariant multiplier, for every method.
+
+    Generalizes the "Cost Certified" line of
+    :func:`plot_invariant_sweep_boxplots` to all methods present in ``df``. For
+    each trial the relative cost gap to the reference (SDP) optimum is
+
+        gap = |(obj_value(method) - obj_value(ref)) / obj_value(ref)|,
+
+    and the trial is cost-certified when ``gap < cost_gap_tol`` (its objective
+    effectively matches the SDP optimum). The percent of cost-certified trials is
+    plotted against ``inv_mult`` on a log x-axis, one line per method colored by
+    :data:`METHOD_COLORS`.
+
+    Returns the created ``(fig, ax)``.
+    """
+    cats = sorted(df["inv_mult"].unique())
+    keys = ["outlier_ratio", "num_assoc", "trial", "inv_mult"]
+
+    # Attach the reference (SDP) objective to every row via its run key, then
+    # compute each trial's relative cost gap to that reference optimum.
+    ref = df[df["method"] == reference_method][keys + ["obj_value"]].rename(
+        columns={"obj_value": "obj_value_ref"}
+    )
+    merged = df.merge(ref, on=keys, how="inner")
+    merged["cost_gap"] = (
+        (merged["obj_value"] - merged["obj_value_ref"]) / merged["obj_value_ref"]
+    ).abs()
+    merged["cost_cert"] = merged["cost_gap"] < cost_gap_tol
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for method, sub in merged.groupby("method"):
+        color = METHOD_COLORS.get(method)
+        cost_cert = sub.groupby("inv_mult")["cost_cert"].mean().mul(100.0).reindex(cats)
+        ax.plot(
+            cats,
+            cost_cert.values,
+            "-o",
+            markersize=4,
+            color=color,
+            label=method,
+        )
+        # Dashed line: percent of trials where the data-association was certified
+        # (``cert_da`` true), same color as the method's solid cost-certified line.
+        cert_da = sub.groupby("inv_mult")["cert_da"].mean().mul(100.0).reindex(cats)
+        ax.plot(
+            cats,
+            cert_da.values,
+            "--",
+            color=color,
+        )
+
+    ax.set_xscale("log")
+    ax.xaxis.set_major_locator(mticker.LogLocator(base=10.0))
+    ax.xaxis.set_minor_locator(mticker.LogLocator(base=10.0, subs="auto"))
+    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    ax.set_xlabel(r"Noise Ratio Assumed/Actual ($\alpha = \sigma / \gamma$)")
+    ax.set_ylabel("Percent of Trials Cost Certified (%)")
+    ax.set_ylim(0, 101)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend()
+
+    fig.tight_layout()
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved figure to {save_path}")
+    if show:
+        plt.show()
+    return fig, ax
+
+
 def invariant_sweep_results(timestamp=None):
     df = load_results("invariant_sweep", timestamp=timestamp)
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
+    # Load separate ransac results and merge them with the main results
+    df = df[df["method"] != "RANSAC"]  # Drop current RANSAC results from main df
+    ransac_df = load_results("invariant_sweep_ransac")
+    df = pd.concat([df, ransac_df], ignore_index=True)
+
     df["percent_inliers"] = df["num_inliers"] / df["num_assoc"] * 100.0
 
-    # The CSV now contains both the CLIPPER and SDP methods; split them.
-    df_clipper = df[df["method"] == "CLIPPER"]
-    df_sdp = df[df["method"] == "SDP"]
-
     plot_invariant_sweep_boxplots(
-        df_clipper,
-        df_sdp,
+        df,
         save_path=DATA_DIR
         / "invariant_sweep"
         / "figures"
         / "invariant_sweep_boxplots.png",
+    )
+
+    # Cost-certified rate across every method (generalizes the "Cost Certified"
+    # line of the box-plot figure to all methods in the sweep).
+    plot_invariant_sweep_cost_certified(
+        df,
+        save_path=DATA_DIR
+        / "invariant_sweep"
+        / "figures"
+        / "invariant_sweep_cost_certified.png",
     )
 
     threshold = 1e-4
@@ -784,7 +894,8 @@ def timing_sweep_results():
 
 if __name__ == "__main__":
 
-    timing_sweep_results()
+    # Genreate the timing sweep experiment results
+    # timing_sweep_results()
 
     # Generate invariant parameter sweep experiment results
-    # invariant_sweep_results(timestamp="20260715T1826")
+    invariant_sweep_results(timestamp="20260715T1826")

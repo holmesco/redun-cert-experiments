@@ -245,31 +245,56 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         inliers = output.debug_info.inliers.cpu().numpy()
         # Transform kpt_3D_1 to the frame of kpt_3D_0 using the estimated transform
         kpt_3D_1_in_0 = T_src_trg.matrix() @ kpt_3D_1  # (4, N)
-
-        # Plot 2D Matches
-        plot_outliers = True
-        axes = viz2d.plot_images([img0_L, img1_L])
+        # Run the pipeline using SDP
+        inliers_global, soln = pipeline.data_association.run_sdp(
+            output.debug_info.keypoints_3D[0],
+            output.debug_info.keypoints_3D[1],
+        )
+        if inliers_global is None:
+            print("SDP failed to find a solution.")
         keypoints_2D = output.debug_info.keypoints_2D
-        viz2d.plot_matches(keypoints_2D[0].T, keypoints_2D[1].T, color="lime", lw=0.2)
-        # Plot 3D Matches with no correction
-        fig, ax = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={"projection": "3d"})
+
+        # Combine everything into a single 2x2 tiled figure:
+        #   top row (both columns): 2D stereo images with TP/FP/FN matches
+        #   bottom-left:            source (frame 0) disparity image
+        #   bottom-right:           3D matches with no correction
+        fig = plt.figure(figsize=(12, 10))
+        gs = fig.add_gridspec(2, 2, wspace=0.0, hspace=0.0)
+
+        # Top: stereo image pair (two axes so matches can be drawn between them).
+        ax_img0 = fig.add_subplot(gs[0, 0])
+        ax_img1 = fig.add_subplot(gs[0, 1])
+        for ax_img, img in ((ax_img0, img0_L), (ax_img1, img1_L)):
+            ax_img.imshow(_img_to_hwc(img), cmap="gray")
+            ax_img.set_axis_off()
+            # Anchor to the bottom of the cell so the letterbox from the equal
+            # aspect ratio sits at the top, not between the rows.
+            ax_img.set_anchor("S")
+        plot_matches_tp_fp_fn(
+            keypoints_2D, inliers, inliers_global, axes=(ax_img0, ax_img1)
+        )
+
+        # Bottom-left: source disparity image.
+        ax_disp = fig.add_subplot(gs[1, 0])
+        disp_src = disp0.squeeze().cpu().numpy()
+        ax_disp.imshow(disp_src, cmap="jet")
+        ax_disp.set_axis_off()
+        # Anchor to the top of the cell so it meets the images above with no gap.
+        ax_disp.set_anchor("N")
+
+        # Bottom-right: 3D matches with no correction.
+        ax_3d = fig.add_subplot(gs[1, 1], projection="3d")
         plot_pointclouds(
             kpt_3D_0,
             kpt_3D_1,
             inliers,
-            ax[0],
+            ax_3d,
             title="3D Keypoints (No Correction)",
-            plot_outliers=plot_outliers,
+            inliers_global=inliers_global,
         )
-        # Plot 3D Matches with correction
-        plot_pointclouds(
-            kpt_3D_0,
-            kpt_3D_1_in_0,
-            inliers,
-            ax[1],
-            title="3D Keypoints (Transformed Frame 1 to Frame 0)",
-            plot_outliers=plot_outliers,
-        )
+        ax_3d.margins(x=0, y=0, z=0)
+        fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+
         plt.show()
 
     # Convert data to dataframe
@@ -283,84 +308,141 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
         OmegaConf.save(
             OmegaConf.structured(pipeline_cfg), run_dir / "stereo_pipeline.yaml"
         )
+        if cfg.plot:
+            fig.savefig(run_dir / "figure.png", dpi=500)
     else:
         print("Experiment results:")
         print(df)
 
 
+def _img_to_hwc(img):
+    """Convert an image (torch CHW / numpy) to HWC numpy for ``imshow``."""
+    if isinstance(img, torch.Tensor) and img.dim() == 3:
+        return img.permute(1, 2, 0).cpu().numpy()
+    if isinstance(img, torch.Tensor):
+        return img.cpu().numpy()
+    return img
+
+
+def _match_groups(inliers, inliers_global):
+    """Categorise matches as TP/FP/FN and return drawing styles.
+
+    Matches are categorized using the local solver solution (``inliers``) and
+    the global SDP solution (``inliers_global``), treating the global solution
+    as ground truth. Each entry is ``(mask, colour, linewidth, alpha)``:
+
+    * green  (TP): selected locally and globally       (lw 0.5, alpha 0.3)
+    * red    (FP): selected locally, rejected globally  (lw 2.0, alpha 1.0)
+    * orange (FN): rejected locally, selected globally  (lw 2.0, alpha 1.0)
+
+    Matches rejected by both (TN) are not drawn. If no global solution is
+    available, matches are coloured by the local inlier mask only.
+    """
+    is_inlier = inliers.astype(bool)
+    if inliers_global is not None:
+        if isinstance(inliers_global, torch.Tensor):
+            is_inlier_global = inliers_global.cpu().numpy().astype(bool)
+        else:
+            is_inlier_global = np.asarray(inliers_global).astype(bool)
+        return [
+            (is_inlier & is_inlier_global, "green", 0.5, 0.3),  # TP
+            (is_inlier & ~is_inlier_global, "red", 2.0, 1.0),  # FP
+            (~is_inlier & is_inlier_global, "orange", 2.0, 1.0),  # FN
+        ]
+    # No global solution: colour by the local inlier mask only.
+    return [
+        (is_inlier, "green", 0.5, 0.3),
+        (~is_inlier, "red", 0.5, 0.3),
+    ]
+
+
+def plot_matches_tp_fp_fn(keypoints_2D, inliers, inliers_global, axes=None):
+    """Plot 2D matches coloured by true/false positive/negative.
+
+    See ``_match_groups`` for the colour/weight scheme.
+    """
+    kpts0 = keypoints_2D[0].T
+    kpts1 = keypoints_2D[1].T
+    if isinstance(kpts0, torch.Tensor):
+        kpts0 = kpts0.cpu().numpy()
+        kpts1 = kpts1.cpu().numpy()
+    for mask, color, lw, alpha in _match_groups(inliers, inliers_global):
+        if mask.any():
+            viz2d.plot_matches(
+                kpts0[mask], kpts1[mask], color=color, lw=lw, a=alpha, axes=axes
+            )
+
+
 def plot_pointclouds(
-    kpt_3D_0, kpt_3D_2, inliers, ax=None, title="3D Keypoints", plot_outliers=False
+    kpt_3D_0,
+    kpt_3D_2,
+    inliers,
+    ax=None,
+    title="3D Keypoints",
+    inliers_global=None,
 ):
     if ax is None:
         fig = plt.figure()
         ax = fig.add_subplot(111, projection="3d")
 
-    outlier_mask = ~inliers
+    # Only plot points selected by the local solver or the global SDP solution
+    # (i.e. the union of ``inliers`` and ``inliers_global``); points rejected by
+    # both are omitted.
+    keep = inliers.astype(bool)
+    if inliers_global is not None:
+        if isinstance(inliers_global, torch.Tensor):
+            is_inlier_global = inliers_global.cpu().numpy().astype(bool)
+        else:
+            is_inlier_global = np.asarray(inliers_global).astype(bool)
+        keep = keep | is_inlier_global
+
     ax.scatter(
-        kpt_3D_0[0, inliers],
-        kpt_3D_0[1, inliers],
-        kpt_3D_0[2, inliers],
+        kpt_3D_0[0, keep],
+        kpt_3D_0[1, keep],
+        kpt_3D_0[2, keep],
         c="magenta",
         s=3,
         label="frame 0",
         alpha=0.7,
     )
-
     ax.scatter(
-        kpt_3D_2[0, inliers],
-        kpt_3D_2[1, inliers],
-        kpt_3D_2[2, inliers],
+        kpt_3D_2[0, keep],
+        kpt_3D_2[1, keep],
+        kpt_3D_2[2, keep],
         c="blue",
         s=3,
         alpha=0.7,
-        label="inliers (frame 1)",
+        label="frame 1",
     )
-    if plot_outliers:
-        ax.scatter(
-            kpt_3D_0[0, outlier_mask],
-            kpt_3D_0[1, outlier_mask],
-            kpt_3D_0[2, outlier_mask],
-            c="magenta",
-            s=3,
-            alpha=0.7,
-            label="outliers (frame 1)",
-        )
-        ax.scatter(
-            kpt_3D_2[0, outlier_mask],
-            kpt_3D_2[1, outlier_mask],
-            kpt_3D_2[2, outlier_mask],
-            c="blue",
-            s=3,
-            alpha=0.7,
-            label="outliers (frame 1)",
-        )
-    # Draw lines between matches.
-    for i in range(kpt_3D_0.shape[1]):
-        line_color = "lime" if inliers[i] else "red"
-        linewidth = 1.0 if inliers[i] else 0.5
-        if inliers[i] or plot_outliers:
+    # Draw lines between matches, coloured with the same TP/FP/FN scheme as the
+    # 2D match plot (see ``_match_groups``).
+    for mask, color, lw, alpha in _match_groups(inliers, inliers_global):
+        for i in np.nonzero(mask)[0]:
             ax.plot(
                 [kpt_3D_0[0, i], kpt_3D_2[0, i]],
                 [kpt_3D_0[1, i], kpt_3D_2[1, i]],
                 [kpt_3D_0[2, i], kpt_3D_2[2, i]],
-                c=line_color,
-                linewidth=linewidth,
-                alpha=0.5,
+                c=color,
+                linewidth=lw,
+                alpha=1.0,
             )
 
-    # ax.set_title(title)
-    # ax.set_xlabel("x")
-    # ax.set_ylabel("y")
-    # ax.set_zlabel("z")
     ax.set_aspect("equal", adjustable="box")
+    # Zoom so the plotted points sit at the limits of the window (only the points
+    # that were actually drawn).
+    drawn = np.concatenate([kpt_3D_0[:3, keep], kpt_3D_2[:3, keep]], axis=1)
+    mins = drawn.min(axis=1)
+    maxs = drawn.max(axis=1)
+    ax.set_xlim(mins[0], maxs[0])
+    ax.set_ylim(mins[1], maxs[1])
+    ax.set_zlim(mins[2], maxs[2])
     # No Background
     ax.set_facecolor("none")
     fig = plt.gcf()
     fig.patch.set_alpha(0.0)
     ax.axis("off")
     ax.grid(False)
-    ax.view_init(elev=-90, azim=90, roll=180)
-
+    ax.set_box_aspect([1, 1, 1], zoom=1.5)
     return ax
 
 

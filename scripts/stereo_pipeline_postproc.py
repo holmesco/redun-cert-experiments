@@ -276,15 +276,35 @@ def _split_by_both_cert(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame
 
 
 def machine_hall_error_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Average translation / rotation error per ``frame_interval``, split on cert.
+    """Absolute and relative translation / rotation error per ``frame_interval``.
 
-    Rotation error is reported in degrees (``err_rot_deg``). The split is on
-    whether both ``cert_da`` and ``cert_reg`` are true for a trial (``_cert``)
-    versus not (``_uncert``).
+    Rotation quantities are reported in degrees. Relative error is the per-trial
+    error divided by the inter-frame delta (``err_trans / delta_trans`` and
+    ``err_rot / delta_rot``) averaged over the frame interval. Rows are labelled
+    by the average time interval of the frame interval.
     """
     df = df.copy()
     df["err_rot_deg"] = np.degrees(df["err_rot"])
-    return _split_by_both_cert(df, ["err_trans", "err_rot_deg"])
+    df["delta_rot_deg"] = np.degrees(df["delta_rot"])
+    # Relative error is dimensionless, so it is computed per trial before averaging.
+    df["rel_err_trans"] = df["err_trans"] / df["delta_trans"]
+    df["rel_err_rot"] = df["err_rot"] / df["delta_rot"]
+
+    summary = (
+        df.groupby("frame_interval")
+        .agg(
+            avg_time_interval=("time_interval", "mean"),
+            avg_err_trans=("err_trans", "mean"),
+            avg_err_rot_deg=("err_rot_deg", "mean"),
+            avg_delta_trans=("delta_trans", "mean"),
+            avg_delta_rot_deg=("delta_rot_deg", "mean"),
+            rel_err_trans=("rel_err_trans", "mean"),
+            rel_err_rot=("rel_err_rot", "mean"),
+        )
+        .reset_index()
+        .drop(columns="frame_interval")
+    )
+    return summary
 
 
 def machine_hall_runtime_summary(df: pd.DataFrame) -> pd.DataFrame:

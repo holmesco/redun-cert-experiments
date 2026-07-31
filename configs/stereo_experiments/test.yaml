@@ -1,9 +1,10 @@
+# Picks out a local minimum from the dataset
 experiment_name: "test"
 dataset_path: "data/Euroc/MH_01_easy"
-index_bounds: [2000,2000]
+index_bounds: [3516,3516]
 shuffle: False
 num_samples: 1
 override_path: "configs/stereo_pipeline/clipper_overrides.yaml"
 frame_interval: [10]
-save_results: False
+save_results: True
 plot: True
