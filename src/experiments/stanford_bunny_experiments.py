@@ -703,23 +703,12 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                 # Compute the relative error between the estimated transformation and the ground truth
                                 T_trg_src = Transformation(T_ba=T.cpu().numpy())
                                 T_trg_src_gt = Transformation(T_ba=T_trg_src_gt_np)
-                                T_error = T_trg_src.inverse() * T_trg_src_gt
-                                rel_trans_error = np.linalg.norm(
-                                    T_error.r_ab_inb()
-                                ) / np.linalg.norm(T_trg_src_gt.r_ab_inb())
-                                theta_error = np.linalg.norm(
-                                    Rotation.from_matrix(
-                                        T_error.matrix()[:3, :3]
-                                    ).as_rotvec()
-                                )
-                                rel_rot_error = theta_error / np.linalg.norm(
-                                    Rotation.from_matrix(
-                                        T_trg_src_gt.matrix()[:3, :3]
-                                    ).as_rotvec()
-                                )
+                                # Assume right perturbation: T_est = T_gt * T_error
+                                T_error = T_trg_src_gt.inverse() * T_trg_src
+                                # Lie algebra vector (se(3)) of the pose error.
+                                xi_err = np.asarray(T_error.vec()).ravel()
                             else:
-                                rel_trans_error = None
-                                rel_rot_error = None
+                                xi_err = np.full(6, np.nan)
 
                             # Store the results
                             output_data.append(
@@ -742,8 +731,10 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                     obj_value=data_association.obj_value,
                                     num_constraints=data_association.num_constraints,
                                     num_iter_cert=num_iter_cert,
-                                    rel_rot_error=rel_rot_error,
-                                    rel_trans_error=rel_trans_error,
+                                    **{
+                                        f"xi_err_{i}": xi_err[i]
+                                        for i in range(6)
+                                    },
                                     inv_mult=invariant_mult,
                                 )
                             )

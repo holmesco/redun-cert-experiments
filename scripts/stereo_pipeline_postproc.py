@@ -146,6 +146,22 @@ def plot_cert_da_success_rate(
     return ax
 
 
+def _add_pose_errors(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive scalar translation/rotation error from the se(3) pose-error vector.
+
+    The experiment stores the pose error as a 6-vector ``xi_err_0..5`` (se(3),
+    translation block first then rotation block, pylgmath ``vec()`` order).
+    ``err_trans`` is the norm of the translation block (metres) and ``err_rot``
+    the norm of the rotation block (radians, matching the units the raw
+    ``err_rot`` column used to carry).
+    """
+    trans_cols = ["xi_err_0", "xi_err_1", "xi_err_2"]
+    rot_cols = ["xi_err_3", "xi_err_4", "xi_err_5"]
+    df["err_trans"] = np.linalg.norm(df[trans_cols].values, axis=1)
+    df["err_rot"] = np.linalg.norm(df[rot_cols].values, axis=1)
+    return df
+
+
 def plot_pose_error(
     df: pd.DataFrame, axes: Optional[List[plt.Axes]] = None
 ) -> List[plt.Axes]:
@@ -189,6 +205,7 @@ def invariant_sweep_results():
     """Load and plot the results of the invariant sweep experiment."""
     df = load_results(experiment_name="invariant_sweep", timestamp="latest")
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
+    _add_pose_errors(df)
     print(df.head())
 
     plot_cert_da_success_rate(df)
@@ -275,38 +292,6 @@ def _split_by_both_cert(df: pd.DataFrame, value_cols: List[str]) -> pd.DataFrame
     return stats[["avg_time_interval"] + ordered]
 
 
-def machine_hall_error_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Absolute and relative translation / rotation error per ``frame_interval``.
-
-    Rotation quantities are reported in degrees. Relative error is the per-trial
-    error divided by the inter-frame delta (``err_trans / delta_trans`` and
-    ``err_rot / delta_rot``) averaged over the frame interval. Rows are labelled
-    by the average time interval of the frame interval.
-    """
-    df = df.copy()
-    df["err_rot_deg"] = np.degrees(df["err_rot"])
-    df["delta_rot_deg"] = np.degrees(df["delta_rot"])
-    # Relative error is dimensionless, so it is computed per trial before averaging.
-    df["rel_err_trans"] = df["err_trans"] / df["delta_trans"]
-    df["rel_err_rot"] = df["err_rot"] / df["delta_rot"]
-
-    summary = (
-        df.groupby("frame_interval")
-        .agg(
-            avg_time_interval=("time_interval", "mean"),
-            avg_err_trans=("err_trans", "mean"),
-            avg_err_rot_deg=("err_rot_deg", "mean"),
-            avg_delta_trans=("delta_trans", "mean"),
-            avg_delta_rot_deg=("delta_rot_deg", "mean"),
-            rel_err_trans=("rel_err_trans", "mean"),
-            rel_err_rot=("rel_err_rot", "mean"),
-        )
-        .reset_index()
-        .drop(columns="frame_interval")
-    )
-    return summary
-
-
 def machine_hall_runtime_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Average certification runtimes per ``frame_interval``, in milliseconds.
 
@@ -324,6 +309,7 @@ def machine_hall_results():
     """Load and summarise the Machine Hall (MH01e_clipper) results."""
     df = load_results(experiment_name="MH01e_clipper", timestamp="latest")
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
+    _add_pose_errors(df)
 
     summary = machine_hall_summary(df)
     summary_kwargs = dict(
@@ -344,23 +330,6 @@ def machine_hall_results():
     print("\nMachine Hall summary (LaTeX):")
     print(summary.to_latex(**summary_kwargs))
 
-    errors = machine_hall_error_summary(df)
-    errors_kwargs = dict(
-        index=False,
-        formatters={
-            "avg_time_interval": "{:.4f}".format,
-            **{
-                c: "{:.6f}".format
-                for c in errors.columns
-                if c.startswith(("err_trans", "err_rot_deg"))
-            },
-        },
-    )
-    print("\nPose error split by (cert_da AND cert_reg):")
-    print(errors.to_string(**errors_kwargs))
-    print("\nPose error split by (cert_da AND cert_reg) (LaTeX):")
-    print(errors.to_latex(**errors_kwargs))
-
     runtimes = machine_hall_runtime_summary(df)
     runtimes_kwargs = dict(
         index=False,
@@ -377,7 +346,7 @@ def machine_hall_results():
     print(runtimes.to_string(**runtimes_kwargs))
     print("\nCertification runtimes split by (cert_da AND cert_reg) (LaTeX):")
     print(runtimes.to_latex(**runtimes_kwargs))
-    return summary, errors, runtimes
+    return summary, runtimes
 
 
 if __name__ == "__main__":

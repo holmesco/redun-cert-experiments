@@ -133,7 +133,7 @@ def find_result_csvs(
     return csv_paths
 
 
-def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
+def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8, axes=None):
     """Draw side-by-side box plots at continuous, log-scaled x positions.
 
     ``cats`` are the actual (numeric) x values and ``series`` is a list of
@@ -142,6 +142,11 @@ def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
     (in log space) so they appear uniform on a log x-axis, and the cluster for
     each category is centered on its value. The x-axis is set to log scale with
     a tick at every decade.
+
+    ``axes`` optionally gives a per-series target axis (list parallel to
+    ``series``); when provided, series ``j`` is drawn on ``axes[j]`` instead of
+    ``ax``. Slot positions are still computed over the full ``series`` list, so
+    boxes drawn on different (e.g. twinned) axes do not overlap in x.
     """
     cats = np.asarray(sorted(cats), dtype=float)
     logc = np.log10(cats)
@@ -150,6 +155,7 @@ def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
     slot = dlog * cluster_frac / max(len(series), 1)
 
     for j, (_, color, per_cat) in enumerate(series):
+        draw_ax = ax if axes is None else axes[j]
         # Multiplicative offset of this series within the cluster.
         off = -dlog * cluster_frac / 2 + slot * (j + 0.5)
         data, positions, widths = [], [], []
@@ -165,7 +171,7 @@ def _log_grouped_boxplot(ax, cats, series, cluster_frac=0.8):
             widths.append(center * (10.0 ** (slot * 0.45) - 10.0 ** (-slot * 0.45)))
         if not data:
             continue
-        ax.boxplot(
+        draw_ax.boxplot(
             data,
             positions=positions,
             widths=widths,
@@ -547,8 +553,9 @@ def plot_invariant_sweep_boxplots(
     only the CLIPPER method; the certified-trials panel covers every method in
     ``df``. The top panel shows side-by-side box plots of the relative
     translation and rotation error within each invariant multiplier, split by
-    whether the trial's data association was certified (``cert_da``), on a log y
-    axis. The middle panel shows, per method, the percent of trials certified
+    whether the trial's data association was certified (``cert_da``). Translation
+    error (m) is on the left log y axis and rotation error (deg) on a twinned
+    right log y axis. The middle panel shows, per method, the percent of trials certified
     (solid) and the percent cost-certified against the SDP optimum (dashed,
     darker), overlaid with the SDP rank-tight rate. The bottom panel shows box
     plots of the percent inliers found per invariant multiplier.
@@ -578,19 +585,25 @@ def plot_invariant_sweep_boxplots(
         ]
 
     trans_series = [
-        ("Trans. (Cert.)", "#12428A", _err_by_cert("rel_trans_error", True)),
-        ("Trans. (No Cert.)", "#20C0D0", _err_by_cert("rel_trans_error", False)),
+        ("Trans. (Cert.)", "#12428A", _err_by_cert("trans_error", True)),
+        ("Trans. (No Cert.)", "#20C0D0", _err_by_cert("trans_error", False)),
     ]
     rot_series = [
-        ("Rot. (Cert.)", "#C0202B", _err_by_cert("rel_rot_error", True)),
-        ("Rot. (No Cert.)", "#F58BB0", _err_by_cert("rel_rot_error", False)),
+        ("Rot. (Cert.)", "#C0202B", _err_by_cert("rot_error_deg", True)),
+        ("Rot. (No Cert.)", "#F58BB0", _err_by_cert("rot_error_deg", False)),
     ]
-    # Combine translation and rotation error distributions into the top-right
-    # panel; the bottom-right panel (ax_rot) is left empty for now.
+    # Translation and rotation carry different units, so they get separate y
+    # axes on the same panel: translation (m) on the left, rotation (deg) on a
+    # twinned right axis. Slots are computed over the combined series list so the
+    # two axes' boxes interleave without overlapping in x.
+    ax_rot = ax_reg_err.twinx()
     err_series = trans_series + rot_series
-    _log_grouped_boxplot(ax_reg_err, cats, err_series)
+    err_axes = [ax_reg_err, ax_reg_err, ax_rot, ax_rot]
+    _log_grouped_boxplot(ax_reg_err, cats, err_series, axes=err_axes)
     ax_reg_err.set_yscale("log")
-    ax_reg_err.set_ylabel("Relative Error (%)")
+    ax_rot.set_yscale("log")
+    ax_reg_err.set_ylabel("Translation Error (m)")
+    ax_rot.set_ylabel("Rotation Error (deg)")
     ax_reg_err.grid(True, which="both", alpha=0.3)
     handles = [
         plt.Line2D([0], [0], color=color, lw=6, alpha=0.6) for _, color, _ in err_series
@@ -822,12 +835,18 @@ def plot_invariant_sweep_cost_certified(
 def invariant_sweep_results(timestamp=None):
     df = load_results("invariant_sweep", timestamp=timestamp)
     print(f"\nLoaded {len(df)} rows from {df['timestamp'].nunique()} run(s).")
-    # Load separate ransac results and merge them with the main results
-    df = df[df["method"] != "RANSAC"]  # Drop current RANSAC results from main df
-    ransac_df = load_results("invariant_sweep_ransac")
-    df = pd.concat([df, ransac_df], ignore_index=True)
 
+    # Get percent inliers
     df["percent_inliers"] = df["num_inliers"] / df["num_assoc"] * 100.0
+
+    # Registration error from the se(3) pose-error vector stored per trial
+    # (xi_err_0..5, translation part first then rotation part, pylgmath order).
+    # Translation error is the norm of the translation block (metres); rotation
+    # error is the norm of the rotation block converted to degrees.
+    trans_cols = ["xi_err_0", "xi_err_1", "xi_err_2"]
+    rot_cols = ["xi_err_3", "xi_err_4", "xi_err_5"]
+    df["trans_error"] = np.linalg.norm(df[trans_cols].values, axis=1)
+    df["rot_error_deg"] = np.degrees(np.linalg.norm(df[rot_cols].values, axis=1))
 
     plot_invariant_sweep_boxplots(
         df,
@@ -898,4 +917,4 @@ if __name__ == "__main__":
     # timing_sweep_results()
 
     # Generate invariant parameter sweep experiment results
-    invariant_sweep_results(timestamp="20260715T1826")
+    invariant_sweep_results(timestamp="20260801T0031")

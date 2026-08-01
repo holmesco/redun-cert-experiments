@@ -208,14 +208,8 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
                 T_src_trg = Transformation(T_ba=output.relative_transform)
                 T_src_trg_gt = Transformation(T_ba=T_src_trg_gt)
                 T_error = T_src_trg * T_src_trg_gt.inverse()
-                err_trans = np.linalg.norm(T_error.r_ab_inb())
-                err_rot = np.linalg.norm(
-                    Rotation.from_matrix(T_error.C_ba()).as_rotvec()
-                )
-                delta_trans = np.linalg.norm(T_src_trg_gt.r_ab_inb())
-                delta_rot = np.linalg.norm(
-                    Rotation.from_matrix(T_src_trg_gt.C_ba()).as_rotvec()
-                )
+                # Lie algebra vector (se(3)) of the pose error.
+                xi_err = np.asarray(T_error.vec()).ravel()
 
                 # Store results
                 output_data.append(
@@ -225,10 +219,7 @@ def run_experiment(cfg: StereoPipelineExperimentConfig):
                         inv_mult=invariant_mult,
                         timestep=timestep,
                         time_interval=time_interval,
-                        err_trans=err_trans,
-                        err_rot=err_rot,
-                        delta_rot=delta_rot,
-                        delta_trans=delta_trans,
+                        **{f"xi_err_{i}": xi_err[i] for i in range(6)},
                         cert_da=output.data_association_certified,
                         cert_reg=output.registration_certified,
                         cert_time_da=output.data_association_cert_time,
