@@ -1,0 +1,15 @@
+experiment_name: "invariant_sweep"
+dataset_path: "data/Euroc/MH_01_easy"
+# 10 randomly sampled 
+shuffle: True
+num_samples: 30
+override_path: "configs/stereo_pipeline/clipper_overrides.yaml"
+# Interval used 
+frame_interval: [1, 5, 10, 20]
+# Invariant sweep parameters
+invariant_mult_min: 0.1
+invariant_mult_max: 1.0
+invariant_mult_num: 5
+# details
+save_results: True
+plot: False

@@ -1,0 +1,15 @@
+feature_extractor_config:
+  max_num_keypoints: 500
+verbose: False
+registration_config:
+  verbose: False
+  cpcert_params:
+    verbose: False
+data_association_config:
+  method: PMC
+  certify: True
+  unweighted: False
+  invariant_epsilon: 83.1e-2
+  invariant_sigma: 15.0e-2
+  cpcert_params:
+    verbose: False

@@ -1,0 +1,9 @@
+experiment_name: "MH01e_clipper_reduced"
+dataset_path: "data/Euroc/MH_01_easy"
+override_path: "configs/stereo_pipeline/clipper_overrides.yaml"
+index_bounds: [1000, 2000]
+# Interval used 
+frame_interval: [1, 5, 10, 20]
+# details
+save_results: True
+plot: False

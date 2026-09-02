@@ -1,7 +1,9 @@
 #directories
 results/
+data/
 
 #files
 *.pyc
 extern/mosek*
 uv.lock
+*settings.json*

@@ -1,0 +1,212 @@
+import torch
+import numpy as np
+import time
+
+import gtsam
+from gtsam.symbol_shorthand import X, S, T
+
+from utils.stereo_camera_model import StereoCameraConfig, StereoCameraModel
+from utils.stereo_utils import get_gt_setup
+from utils.keypoint_tools import get_inv_cov_weights
+from utils.lie_algebra import se3_exp
+
+from mwcerts.cert_factor_graph import LocalizationFactorGraph
+
+
+def set_seed(x):
+    np.random.seed(x)
+    torch.manual_seed(x)
+
+
+# Default dtype
+torch.set_default_dtype(torch.float64)
+torch.autograd.set_detect_anomaly(True)
+
+
+class SinglePoseStereoLocalization(LocalizationFactorGraph):
+    def __init__(
+        self,
+        keypoints_3D_src: np.ndarray,
+        keypoints_3D_trg: np.ndarray,
+        inv_cov_weights: np.ndarray,
+        certify: bool = True,
+        T_s_v: np.ndarray | None = None,  # TODO remove since not used anywhere
+    ):
+
+        super().__init__()
+
+        assert (
+            len(keypoints_3D_src.shape) == 2
+        ), "keypoints_3D_src should have shape (3, N_map)"
+        assert (
+            len(keypoints_3D_trg.shape) == 2
+        ), "keypoints_3D_trg should have shape (3, N_map)"
+        assert (
+            keypoints_3D_src.shape[1] == keypoints_3D_trg.shape[1]
+        ), "keypoints_3D_src and keypoints_3D_trg should have the same shape"
+        self.keypoints_3D_src = keypoints_3D_src
+        self.keypoints_3D_trg = keypoints_3D_trg
+        if T_s_v is None:
+            T_s_v = np.eye(4)
+        assert T_s_v.shape == (4, 4), "T_s_v should have shape (4, 4)"
+        self.T_s_v = T_s_v
+        self.N_map = keypoints_3D_src.shape[1]
+        self.T_trg_src = None
+
+        # Add factors for keypoints
+        self.add_fixed_keypoint_factors(
+            pose_id=gtsam.Symbol("x", 0),
+            keypoints_3D_src=keypoints_3D_src,
+            keypoints_3D_trg=keypoints_3D_trg,
+            weights=inv_cov_weights,
+        )
+
+        # Add constraints
+        if certify:
+            self.add_constraints()
+
+    def solve_factor_graph(self, T_init: np.ndarray, verbose: bool = False):
+        """Solve the factor graph optimization problem starting from T_init.
+        Estimated and initialized poses are transformations from source frame to target, i.e. T_trg_src."""
+        # Build initial values
+        initial_values = gtsam.Values()
+        initial_values.insert(
+            X(0), gtsam.Pose3(gtsam.Rot3(T_init[:3, :3]), gtsam.Point3(T_init[:3, 3]))
+        )
+        # Run optimization
+        result, time = self.optimize_graph(initial_values, verbose=verbose)
+        # Extract solution
+        T_est = result.atPose3(gtsam.Symbol("x", 0).key()).matrix()
+        # Extract cost
+        cost = self.graph.error(result)
+        info = {"cost": cost, "time": time}
+        return T_est, info
+
+    def certify_single_pose_solution(
+        self, T_est: np.ndarray, verbose=False, adjust_cost=True
+    ):
+        """Certify a single pose solution."""
+        values = gtsam.Values()
+        values.insert(
+            gtsam.Symbol("x", 0).key(),
+            gtsam.Pose3(gtsam.Rot3(T_est[:3, :3]), gtsam.Point3(T_est[:3, 3])),
+        )
+        cert_result = self.certify_solution(
+            values, verbose=verbose, adjust_cost=adjust_cost
+        )
+        return cert_result
+
+
+def sim_single_pose_localization(
+    N_map: int = 50,
+    device: str = "cpu",
+    seed: int = 0,
+    pixel_noise: float = 0.0,
+    normalize_weights: bool = True,
+) -> SinglePoseStereoLocalization:
+    set_seed(seed)
+    torch_device = torch.device(device)
+    batch_size = 1
+    r_v0s, C_v0s, r_ls = get_gt_setup(
+        N_map=N_map, N_batch=batch_size, traj_type="circle", n_turns=0.25
+    )
+    r_v0s = torch.tensor(r_v0s, device=torch_device)
+    C_v0s = torch.tensor(C_v0s, device=torch_device)
+    r_ls = torch.tensor(r_ls, device=torch_device)[None, :, :].expand(
+        batch_size, -1, -1
+    )
+    # Set up stereo model
+    stereo_cam_config = StereoCameraConfig(
+        cu=0.0, cv=0.0, f=484.5, b=0.24, sigma=pixel_noise
+    )
+    stereo_cam = StereoCameraModel(stereo_cam_config).to(torch_device)
+
+    # vehicle to sensor transform
+    pert = 0.0
+    xi_pert = torch.tensor([[pert, pert, pert, pert, pert, pert]], device=torch_device)
+    T_s_v = se3_exp(xi_pert)[0]
+
+    cam_coords_v = torch.bmm(C_v0s, r_ls - r_v0s)
+    cam_coords_v = torch.concat(
+        [cam_coords_v, torch.ones(batch_size, 1, r_ls.size(2), device=torch_device)],
+        dim=1,
+    )
+
+    src_coords_v = torch.concat(
+        [r_ls, torch.ones(batch_size, 1, r_ls.size(2), device=torch_device)], dim=1
+    )
+
+    cam_coords = T_s_v[None, :, :].bmm(cam_coords_v)
+    src_coords = T_s_v[None, :, :].bmm(src_coords_v)
+
+    zeros = torch.zeros(batch_size, 1, 3, device=torch_device).type_as(r_v0s)
+    one = torch.ones(batch_size, 1, 1, device=torch_device).type_as(r_v0s)
+    r_0v_v = -C_v0s.bmm(r_v0s)
+    trans_cols = torch.cat([r_0v_v, one], dim=1)
+    rot_cols = torch.cat([C_v0s, zeros], dim=1)
+    T_trg_src = torch.cat([rot_cols, trans_cols], dim=2)
+
+    weights = torch.ones(batch_size, 1, src_coords.size(2), device=torch_device)
+    if pixel_noise > 0.0:
+        valid = weights > 0
+        inv_cov_weights, cov_cam = get_inv_cov_weights(
+            cam_coords, valid, stereo_cam, normalize_weights=normalize_weights
+        )
+        # convert to list
+        inv_cov_weights = [
+            inv_cov_weights[0, i, :, :].cpu().numpy()
+            for i in range(inv_cov_weights.size(1))
+        ]
+    else:
+        inv_cov_weights = [np.eye(3) for _ in range(src_coords.size(2))]
+    # If pixel noise is actually enabled
+    if pixel_noise:
+        noise = torch.randn((cam_coords.size(2), 3, 1))
+        L = torch.linalg.cholesky(cov_cam[0])
+        noise_clr = L.bmm(noise).squeeze(2).T
+        cam_coords[0, :3, :] = cam_coords[0, :3, :] + noise_clr
+
+    stereo_loc = SinglePoseStereoLocalization(
+        keypoints_3D_src=src_coords[0, :3, :].cpu().numpy(),
+        keypoints_3D_trg=cam_coords[0, :3, :].cpu().numpy(),
+        inv_cov_weights=inv_cov_weights,
+        T_s_v=T_s_v,
+    )
+    # Store actual pose
+    stereo_loc.T_trg_src = T_trg_src[0].cpu().numpy()
+    return stereo_loc
+
+
+def get_random_inits(radius, N_batch=10, seed=0, pointing_at_origin=True):
+    """Generate random pose initializations similar to stereo_cal.get_random_inits."""
+    set_seed(seed)
+    r_v0s = []
+    C_v0s = []
+
+    for _ in range(N_batch):
+        # random locations on sphere
+        r_ = np.random.random((3, 1)) - 0.5
+        r = radius * r_ / np.linalg.norm(r_)
+        r_v0s += [r]
+
+        if pointing_at_origin:
+            # random orientation pointing at origin
+            z = -r / np.linalg.norm(r)
+            y = np.random.randn(3, 1)
+            y = y - y.T @ z * z
+            y = y / np.linalg.norm(y)
+            x = np.cross(y[:, 0], z[:, 0])[:, None]
+            C_v0s += [np.hstack([x, y, z]).T]
+        else:
+            # random orientation
+            C_v0 = np.linalg.qr(np.random.randn(3, 3))[0]
+            C_v0s += [C_v0]
+
+    r_v0s = np.stack(r_v0s)
+    C_v0s = np.stack(C_v0s)
+
+    return r_v0s, C_v0s
+
+
+if __name__ == "__main__":
+    stereo_loc = sim_single_pose_localization()

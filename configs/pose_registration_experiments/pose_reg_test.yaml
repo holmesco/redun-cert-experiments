@@ -1,0 +1,44 @@
+# Test file for pose registration experiments
+experiment_name: pose_reg_test
+ply_path: data/bun10k.ply
+save_results: False
+plot: True
+# Simplified setup 
+num_points: [50]
+camera_distances: [3.0]
+thetas: [0.1]
+add_noise: True
+# Trial setup
+num_trials: 100
+init_type: RANDOM
+# Registration setup
+registration_config:
+  certify: True
+  verbose: True
+  adjust_cost: True
+  # CPCert parameters
+  cpcert_params:
+    verbose: True
+    lin_solver: MFCG_LRP
+    lin_solve_max_iter: 200
+    lin_solve_tol: 1e-5
+    delta: 1e-5
+    rescale_lin_sys: False
+    max_iter: 20
+    # Early stopping local
+    early_stop_angle: True
+    max_angle: 1e-2
+    # Perturbation parameters
+    perturb_cost: True
+    eps_cost: 1e-5
+    perturb_constraints: False
+    eps_constr: 1e-5
+    # Preconditioner parameters
+    lrp_params:
+      tau: 1e-5
+      method: SparseLDLT
+    # Adaptive perturbation
+    adaptive_perturb: True
+    eps_mult_min: 1e-3
+  
+  

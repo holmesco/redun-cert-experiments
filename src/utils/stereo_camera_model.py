@@ -1,11 +1,26 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dataclasses import dataclass
+import cv2
+import numpy as np
+from matplotlib import pyplot as plt
 
 """
 Original source code: git@github.com:utiasASRL/deep_learned_visual_features.git
 Branch: mat-weight-sdp-version
 """
+torch.set_default_dtype(torch.float32)
+
+
+@dataclass(frozen=True)
+class StereoCameraConfig:
+    cu: float = 0.0
+    cv: float = 0.0
+    f: float = 1.0
+    b: float = 1.0
+    sigma: float = 0.5
+    debug: bool = False
 
 
 class StereoCameraModel(nn.Module):
@@ -13,38 +28,31 @@ class StereoCameraModel(nn.Module):
     The stereo camera model.
     """
 
-    def __init__(self, cu, cv, f, b, sigma=0.5, debug=False):
+    def __init__(self, config: StereoCameraConfig):
         """
         Set up the stereo camera model with the stereo camera parameters.
 
         Args:
-            cu (float): optical centre u coordinate.
-            cv (float): optical centre v coordinate.
-            f (float): focal length.
-            b (float): stereo camera base line.
-            sigma (float) : assumed pixel noise std dev
-            debug (bool) : debugging flag
+            config (StereoCameraConfig): camera intrinsics and options.
         """
         super(StereoCameraModel, self).__init__()
 
-        self.cu = cu
-        self.cv = cv
-        self.f = f
-        self.b = b
-        self.sigma = sigma
-        self.debug = debug
+        self.cu = config.cu
+        self.cv = config.cv
+        self.f = config.f
+        self.b = config.b
+        self.sigma = config.sigma
+        self.debug = config.debug
 
         # Covariance matrix in pixel space for left camera coordinates and disparity
-        cov_pxl = (
-            torch.tensor(
-                [
-                    [1.0, 0.0, 1.0],
-                    [0.0, 1.0, 0.0],
-                    [1.0, 0.0, 2.0],
-                ]
-            )
-            * sigma**2
-        )
+        cov_pxl = torch.tensor(
+            [
+                [1.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 2.0],
+            ],
+            dtype=torch.float32,
+        ) * (self.sigma**2)
 
         # Matrices for camera model needed to projecting/reprojecting between the camera and image frames
         M, Q = self.set_camera_model_matrices(self.cu, self.cv, self.f, self.b)
@@ -85,7 +93,8 @@ class StereoCameraModel(nn.Module):
                 [0.0, self.f, self.cv, 0.0],
                 [self.f, 0.0, self.cu, -(self.f * self.b)],
                 [0.0, self.f, self.cv, 0.0],
-            ]
+            ],
+            dtype=torch.float32,
         )
 
         # Matrix needed to transform image coordinates into 3D points.
@@ -102,7 +111,8 @@ class StereoCameraModel(nn.Module):
                 [0.0, self.b, 0.0, -(self.b * self.cv)],
                 [0.0, 0.0, 0.0, self.f * self.b],
                 [0.0, 0.0, 1.0, 0.0],
-            ]
+            ],
+            dtype=torch.float32,
         )
 
         return M, Q
@@ -279,3 +289,58 @@ class StereoCameraModel(nn.Module):
                 raise ValueError("Nan or Inf in camera coordinates")
 
         return cam_coords, valid_points
+
+
+def get_disparity(
+    img0: np.ndarray, img1: np.ndarray, plot=False, matcher=None
+) -> np.ndarray:
+    """Compute disparity map from stereo image pair using StereoSGBM.
+
+    Args:
+        img0 (np.ndarray): Left/reference image
+        img1 (np.ndarray): Right image
+        plot (bool): Whether to plot the disparity map
+        matcher (cv2.StereoSGBM): Optional pre-configured matcher. If None, creates default.
+
+    Returns:
+        torch.Tensor : Disparity map (pixels) in float32 format, (1xHxW).
+    """
+    if matcher is None:
+        numDisp = 16 * 7  # Number of disparities
+        bs = 9  # Block size
+        # Calculate smooth penalties automatically based on block size
+        p1 = 8 * 1 * bs * bs
+        p2 = 32 * 1 * bs * bs
+        uniq = 3
+        specWin = 100
+        specRange = 2
+        # Setup the matcher
+        matcher = cv2.StereoSGBM_create(
+            minDisparity=0,
+            numDisparities=numDisp,
+            blockSize=bs,
+            P1=p1,
+            P2=p2,
+            disp12MaxDiff=1,
+            uniquenessRatio=uniq,
+            speckleWindowSize=specWin,
+            speckleRange=specRange,
+            mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        )
+    # Normalize images to 0-255 and convert to uint8
+    img0_norm = cv2.normalize(img0, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    img1_norm = cv2.normalize(img1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # Compute disparity and rescale to real values
+    disparity = matcher.compute(img0_norm, img1_norm).astype(np.float32) / 16.0
+    # Convert to float and divide by 16 to get true pixel disparity
+    if plot:
+        # Normalize to 0-255 for visualization
+        plt.figure()
+        disparity_visual = cv2.normalize(
+            disparity, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U
+        )
+        plt.imshow(disparity_visual, cmap="jet")
+
+    disparity = torch.from_numpy(disparity).unsqueeze(0).float()
+
+    return disparity
