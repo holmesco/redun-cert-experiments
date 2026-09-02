@@ -10,11 +10,11 @@ import torch
 from scipy.sparse import csc_array, coo_array, eye_array
 
 import clipperpy
-from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
+from stereo_loc.CPCertParamsConfig import CPCertParamsConfig
 from stereo_loc.PointCloudRegistrationBlock import estimate_pose_svd
 from ranktools import (
-    AnalyticCenterResult,
-    AnalyticCenter,
+    CPCertResult,
+    CPCert,
     MaxCliqueCertifier,
     SDPResult,
 )
@@ -52,9 +52,9 @@ class DataAssociationConfig:
     # --- Certification Parameters ---
     # Certification flag for data association
     certify: bool = False
-    # Parameters for the analytic centering certifier
-    ac_params: AnalyticCenterParamsConfig = field(
-        default_factory=AnalyticCenterParamsConfig
+    # Parameters for the CPCert certifier
+    cpcert_params: CPCertParamsConfig = field(
+        default_factory=CPCertParamsConfig
     )
     # Rank ratio for determining rank of SDP solution. Eigenvalue considered to be zero if it is less than rank_ratio * max_eigenvalue. This is used to determine if the SDP solution is rank-1.
     rank_ratio: float = 1e-6
@@ -144,7 +144,7 @@ class DataAssociationBlock:
         U: np.ndarray | torch.Tensor,
         cost: float = None,
         check_constraints: bool = False,
-    ) -> AnalyticCenterResult:
+    ) -> CPCertResult:
         """Certify the solution x for the max clique problem defined by M.
 
         Parameters
@@ -158,7 +158,7 @@ class DataAssociationBlock:
 
         Returns
         -------
-        result : AnalyticCenterResult
+        result : CPCertResult
             Result of the certification process.
         """
         if isinstance(U, torch.Tensor):
@@ -179,8 +179,8 @@ class DataAssociationBlock:
             else:
                 cost = -(U.T @ M @ U).trace()
         # Set up central path certifier
-        ac_params = self.config.ac_params.to_cpp_class()
-        certifier = MaxCliqueCertifier(-M, cost, ac_params)
+        cpcert_params = self.config.cpcert_params.to_cpp_class()
+        certifier = MaxCliqueCertifier(-M, cost, cpcert_params)
         # Update metrics for tracking.
         self.num_constraints = certifier.m
         self.obj_value = cost
@@ -305,7 +305,7 @@ class DataAssociationBlock:
                 # The isolated solve was killed (e.g. by the OOM killer).
                 return None, None
         else:
-            payload = _run_sdp_solve(M, self.config.ac_params)
+            payload = _run_sdp_solve(M, self.config.cpcert_params)
 
         print(f"SDP solve time: {payload['time_sdp']*1e3:.0f} ms")
         # Update metrics for tracking.
@@ -350,7 +350,7 @@ class DataAssociationBlock:
         result_queue = ctx.Queue()
         proc = ctx.Process(
             target=_solve_sdp_worker,
-            args=(M, self.config.ac_params, result_queue),
+            args=(M, self.config.cpcert_params, result_queue),
         )
         proc.start()
 
@@ -535,7 +535,7 @@ def get_maxclique_sdp_constraints(M: np.ndarray):
 
 
 # ---- Helper functions for running the SDP solve in a child process ----
-def _run_sdp_solve(M, ac_params_config):
+def _run_sdp_solve(M, cpcert_params_config):
     """Construct the MaxCliqueCertifier and solve the SDP relaxation.
 
     Returns only plain, picklable data so this can run either in-process or in a
@@ -544,14 +544,14 @@ def _run_sdp_solve(M, ac_params_config):
 
     Args:
         M (np.ndarray): Affinity matrix, of shape (N, N).
-        ac_params_config (AnalyticCenterParamsConfig): Picklable Python config;
+        cpcert_params_config (CPCertParamsConfig): Picklable Python config;
             converted to its C++ class inside this function so nothing that
             crosses a process boundary needs to be a bound C++ object.
     Returns:
         dict: {"obj_value", "X", "m", "time_sdp"}.
     """
-    ac_params = ac_params_config.to_cpp_class()
-    certifier = MaxCliqueCertifier(-M, 0.0, ac_params)
+    cpcert_params = cpcert_params_config.to_cpp_class()
+    certifier = MaxCliqueCertifier(-M, 0.0, cpcert_params)
     result = certifier.solve_sdp_mosek()
     return {
         "obj_value": result.obj_value,
@@ -561,6 +561,6 @@ def _run_sdp_solve(M, ac_params_config):
     }
 
 
-def _solve_sdp_worker(M, ac_params_config, result_queue):
+def _solve_sdp_worker(M, cpcert_params_config, result_queue):
     """Child-process entry point: solve the SDP and put the result on the queue."""
-    result_queue.put(_run_sdp_solve(M, ac_params_config))
+    result_queue.put(_run_sdp_solve(M, cpcert_params_config))

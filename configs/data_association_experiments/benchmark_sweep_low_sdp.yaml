@@ -22,7 +22,7 @@ data_association_config:
   ransac_num_sample_pts: 6
   ransac_num_iterations: 200
   ransac_inlier_threshold: 0.025
-  ac_params:
+  cpcert_params:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200

@@ -28,7 +28,7 @@ data_association_config:
   ransac_inlier_threshold: 0.006
   certify: True
   method: CLIPPER
-  ac_params:
+  cpcert_params:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200

@@ -34,7 +34,7 @@ data_association_config:
   certify: True
   # Turn off separate process for SDP (only required for bigger SDPs)
   spawn_process: False 
-  ac_params:
+  cpcert_params:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200

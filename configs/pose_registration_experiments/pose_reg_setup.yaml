@@ -16,8 +16,8 @@ registration_config:
   certify: True
   verbose: False
   adjust_cost: True
-  # Analytic centering parameters
-  ac_params:
+  # CPCert parameters
+  cpcert_params:
     verbose: False
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200

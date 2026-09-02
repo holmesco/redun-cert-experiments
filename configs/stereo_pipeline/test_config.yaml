@@ -4,8 +4,8 @@ registration_config:
   certify: True
   verbose: True
   adjust_cost: True
-  # Analytic centering parameters
-  ac_params:
+  # CPCert parameters
+  cpcert_params:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200
@@ -36,8 +36,8 @@ data_association_config:
   invariant_epsilon: 0.20
   invariant_sigma: 0.05
   ransac_inlier_threshold: 0.1
-  # Analytic Centering parameters
-  ac_params:
+  # CPCert parameters
+  cpcert_params:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 200

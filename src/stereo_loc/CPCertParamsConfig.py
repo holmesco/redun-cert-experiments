@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from ranktools import (
-    AnalyticCenterParams,
+    CPCertParams,
     LinearSolverType as RankToolsLinearSolverType,
     LowRankPrecondMethod as RankToolsLowRankPrecondMethod,
     LowRankPrecondParams,
@@ -49,8 +49,8 @@ class LowRankPrecondParamsConfig:
 
 
 @dataclass
-class AnalyticCenterParamsConfig:
-    """Mirror of C++ AnalyticCenterParams struct for OmegaConf compatibility"""
+class CPCertParamsConfig:
+    """Mirror of C++ CPCertParams struct for OmegaConf compatibility"""
 
     # Verbosity
     verbose: bool = True
@@ -109,7 +109,7 @@ class AnalyticCenterParamsConfig:
     )
 
     # Line search
-    # Line search enable for analytic center
+    # Line search enable for CPCert
     enable_line_search: bool = True
     # Line search reduction factor
     ln_search_red_factor: float = 0.8
@@ -136,8 +136,8 @@ class AnalyticCenterParamsConfig:
     # Centrality metric tolerance
     tol_cert_centrality: float = 1e-5
 
-    def to_cpp_class(self) -> AnalyticCenterParams:
-        params = AnalyticCenterParams()
+    def to_cpp_class(self) -> CPCertParams:
+        params = CPCertParams()
 
         # General
         params.verbose = self.verbose

@@ -39,7 +39,7 @@ from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 import open3d as o3d
 
-from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
+from stereo_loc.CPCertParamsConfig import CPCertParamsConfig
 from stereo_loc.PointCloudRegistrationBlock import (
     PointCloudRegistrationBlock,
     PointCloudRegistrationConfig,
@@ -97,7 +97,7 @@ class PoseRegExperimentConfig:
     registration_config: PointCloudRegistrationConfig = field(
         default_factory=lambda: PointCloudRegistrationConfig(
             certify=True,
-            ac_params=AnalyticCenterParamsConfig(verbose=False),
+            cpcert_params=CPCertParamsConfig(verbose=False),
         )
     )
     # Number of reference SDP solves per problem instance; cost and solve time

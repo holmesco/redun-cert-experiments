@@ -3,7 +3,7 @@ feature_extractor_config:
 verbose: False
 registration_config:
   verbose: False
-  ac_params:
+  cpcert_params:
     verbose: False
 data_association_config:
   method: CLIPPER
@@ -11,6 +11,6 @@ data_association_config:
   unweighted: False
   invariant_epsilon: 83.1e-2
   invariant_sigma: 15.0e-2
-  ac_params:
+  cpcert_params:
     verbose: False
   

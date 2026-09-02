@@ -23,7 +23,7 @@ from stereo_loc.PointCloudRegistrationBlock import (
     PointCloudRegistrationBlock,
     PointCloudRegistrationConfig,
 )
-from ranktools import AnalyticCenterResult
+from ranktools import CPCertResult
 
 torch.set_default_dtype(torch.float32)
 
@@ -78,8 +78,8 @@ class StereoPipelineDebugInfo:
     # Inverse covariance weights for each matched point pair, of shape (N, 3, 3).
     inv_cov_weights: torch.Tensor = None
     # Certification results
-    cert_result_association: AnalyticCenterResult | None = None
-    cert_result_registration: AnalyticCenterResult | None = None
+    cert_result_association: CPCertResult | None = None
+    cert_result_registration: CPCertResult | None = None
     # Data association solution (for SDP), of shape (N, N).
     da_soln: np.ndarray | None = None
     # Clipper matrix M (for SDP), of shape (N, N).

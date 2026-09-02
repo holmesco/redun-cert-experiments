@@ -5,12 +5,12 @@ import torch
 import numpy as np
 
 from ranktools import (
-    AnalyticCenterParams,
+    CPCertParams,
     LinearSolverType,
     LowRankPrecondMethod,
-    AnalyticCenterResult,
+    CPCertResult,
 )
-from stereo_loc.AnalyticCenterParamsConfig import AnalyticCenterParamsConfig
+from stereo_loc.CPCertParamsConfig import CPCertParamsConfig
 from mat_weight_loc.one_pose_stereo_loc import SinglePoseStereoLocalization
 import gtsam
 
@@ -21,9 +21,9 @@ class PointCloudRegistrationConfig:
 
     # Certification flag
     certify: bool = False
-    # Analytic centering parameters
-    ac_params: AnalyticCenterParamsConfig = field(
-        default_factory=AnalyticCenterParamsConfig
+    # CPCert parameters
+    cpcert_params: CPCertParamsConfig = field(
+        default_factory=CPCertParamsConfig
     )
     # Verbosity flag for factor graph optimization
     verbose: bool = False
@@ -73,16 +73,16 @@ class PointCloudRegistrationBlock:
         T_src_trg = np.linalg.inv(T_trg_src)
         return T_src_trg, info
 
-    def certify_solution(self, T_src_trg: np.ndarray) -> AnalyticCenterResult:
-        """Certify the solution using the analytic center certificate."""
+    def certify_solution(self, T_src_trg: np.ndarray) -> CPCertResult:
+        """Certify the solution using the CPCert certificate."""
         if not self.config.certify:
             raise ValueError("Certification is not enabled in the configuration.")
         # Invert solution to get T_trg_src for certification
         T_trg_src = np.linalg.inv(T_src_trg)
         # Convert dataclass params to C++ wrapper config class
-        ac_params: AnalyticCenterParams = self.config.ac_params.to_cpp_class()
+        cpcert_params: CPCertParams = self.config.cpcert_params.to_cpp_class()
         # Set certifier parameters
-        self.localizer.set_certifier_params(ac_params)
+        self.localizer.set_certifier_params(cpcert_params)
         # Run certification
         result = self.localizer.certify_single_pose_solution(
             T_est=T_trg_src,

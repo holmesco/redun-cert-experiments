@@ -10,8 +10,8 @@ data_association_config:
   ransac_inlier_threshold: 1.8e-1
   ransac_num_iterations: 100
   ransac_num_sample_pts: 10
-  # Analytic Centering for data association
-  ac_params:
+  # CPCert for data association
+  cpcert_params:
     verbose: True
     lin_solver: MFCG_LRP
     lin_solve_max_iter: 400
