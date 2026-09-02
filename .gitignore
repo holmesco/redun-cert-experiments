@@ -1,6 +1,6 @@
 #directories
 results/
-data/Euroc/
+data/
 
 #files
 *.pyc
