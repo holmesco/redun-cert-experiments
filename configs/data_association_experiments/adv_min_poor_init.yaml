@@ -6,7 +6,7 @@ seed: 2
 noise_beta: 0.0554
 noise_sigma: 0.01
 # Sweep parameters
-num_assocs: [300]
+num_assocs: [100]
 outlier_ratios: [0.25]
 num_trials: 1
 # turn off results storage

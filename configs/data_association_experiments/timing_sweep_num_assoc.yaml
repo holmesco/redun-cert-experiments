@@ -13,13 +13,13 @@ num_trials: 10
 save_results: True
 plot: False
 # Methods to run
-methods: [CLIPPER, SDP, PMC, RANSAC]
+methods: [CLIPPER, SDP]
 # Data association config
 data_association_config:
   invariant_epsilon: 0.0554
   invariant_sigma: 0.01
   certify: True
-  ransac_num_sample_pts: 6
+  ransac_num_sample_pts: 10
   ransac_num_iterations: 500
   ransac_inlier_threshold: 0.025
   ac_params:
@@ -32,7 +32,7 @@ data_association_config:
     max_iter: 10
     # Early stopping local
     early_stop_angle: True
-    max_angle: 5e-5
+    max_angle: 8e-5
     # Perturbation parameters
     perturb_cost: True
     eps_cost: 1e-7

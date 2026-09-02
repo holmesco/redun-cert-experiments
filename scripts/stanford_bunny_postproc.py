@@ -85,8 +85,12 @@ def load_results(
 def load_timing_sweep(data_dir: Path = DATA_DIR) -> pd.DataFrame:
     """Load the ``timing_sweep`` experiment results."""
     # Load both the original and SDP-augmented runs and concatenate them.
-    df_outlier = load_results("timing_sweep_outlier_ratio", data_dir=data_dir)
-    df_assoc = load_results("timing_sweep_num_assoc", data_dir=data_dir)
+    df_outlier = load_results(
+        "timing_sweep_outlier_ratio", data_dir=data_dir, timestamp="latest"
+    )
+    df_assoc = load_results(
+        "timing_sweep_num_assoc", data_dir=data_dir, timestamp="latest"
+    )
     return df_outlier, df_assoc
 
 
@@ -914,7 +918,7 @@ def timing_sweep_results():
 if __name__ == "__main__":
 
     # Genreate the timing sweep experiment results
-    # timing_sweep_results()
+    timing_sweep_results()
 
     # Generate invariant parameter sweep experiment results
-    invariant_sweep_results(timestamp="20260801T0031")
+    invariant_sweep_results(timestamp="20260805T2030")

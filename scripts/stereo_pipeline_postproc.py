@@ -245,10 +245,10 @@ def machine_hall_summary(df: pd.DataFrame) -> pd.DataFrame:
             avg_num_inliers=("num_inliers", "mean"),
             avg_num_assoc=("num_valid", "mean"),
             avg_outlier_rate=("outlier_ratio", "mean"),
-            avg_err_trans=("err_trans", "mean"),
-            avg_err_rot_deg=("err_rot_deg", "mean"),
             da_cert_rate=("cert_da", "mean"),
             reg_cert_rate=("cert_reg", "mean"),
+            avg_err_trans=("err_trans", "mean"),
+            avg_err_rot_deg=("err_rot_deg", "mean"),
         )
         .reset_index()
     )

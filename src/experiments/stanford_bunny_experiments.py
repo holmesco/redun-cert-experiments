@@ -24,6 +24,7 @@ import time
 import numpy as np
 import pandas as pd
 import torch
+from matplotlib import pyplot as plt
 from omegaconf import OmegaConf
 from scipy.spatial import KDTree
 from tqdm import tqdm
@@ -475,6 +476,7 @@ def plot_associations(
     inliers_global: torch.Tensor | None = None,
     num_outliers: int = 0,
     certified: bool = False,
+    no_line_color: bool = False,
 ) -> None:
     """Plot the source/target point clouds and their putative associations.
 
@@ -484,7 +486,6 @@ def plot_associations(
     remaining (outlier) associations. Association lines are drawn with an alpha of
     0.5.
     """
-    import matplotlib.pyplot as plt
 
     # (m, 3) source/target points for each association (drop homogeneous row).
     src = src_t[:3, :].cpu().numpy().T
@@ -530,7 +531,12 @@ def plot_associations(
     for i in range(src.shape[0]):
         lw = 0.5
         alpha = 0.3
-        if inliers_global is not None:
+        if no_line_color:
+            # For initial plots
+            color = "black"
+            alpha = 0.2
+        elif inliers_global is not None:
+            # for plots with global solution
             if is_inlier[i] and is_inlier_global[i]:
                 color = "green"
             elif is_inlier[i] and not is_inlier_global[i]:
@@ -544,7 +550,11 @@ def plot_associations(
             else:
                 continue
         else:
-            color = "green" if is_inlier[i] else "red"
+            if is_inlier[i]:
+                color = "green"
+            else:
+                continue
+
         ax.plot(
             [src[i, 0], trg[i, 0]],
             [src[i, 1], trg[i, 1]],
@@ -570,6 +580,39 @@ def plot_associations(
     ax.axis("off")
     # Set camera to look down the negative Z axis, with Y up
     ax.view_init(elev=90, azim=-90)
+
+    return ax
+
+
+def plot_affinity(affinity: np.ndarray, inliers: torch.Tensor):
+    """Plot the affinity matrix as a heatmap with the inlier vector above it.
+
+    The inlier vector is drawn as a single-row image directly above the affinity
+    matrix, sharing its x axis and its exact width, so column ``i`` of the strip
+    lines up with column ``i`` of the matrix. Returns the affinity matrix axes.
+    """
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    _, ax = plt.subplots()
+    ax.imshow(affinity, cmap="gray_r")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.axis("off")
+
+    # Append the inlier strip to the top of the affinity axes. Using an axes
+    # divider (rather than a second subplot) keeps the strip exactly as wide as
+    # the equal-aspect affinity image, whose axes box is shrunk to fit the data.
+    ax_in = make_axes_locatable(ax).append_axes("top", size="5%", pad=0.05, sharex=ax)
+    ax_in.imshow(
+        inliers.detach().cpu().numpy().reshape(1, -1),
+        cmap="gray_r",
+        aspect="auto",
+        vmin=0.0,
+        vmax=1.0,
+    )
+    ax_in.set_xticks([])
+    ax_in.set_yticks([])
+    ax_in.axis("off")
 
     return ax
 
@@ -731,10 +774,7 @@ def run_experiment(cfg: BunnyExperimentConfig):
                                     obj_value=data_association.obj_value,
                                     num_constraints=data_association.num_constraints,
                                     num_iter_cert=num_iter_cert,
-                                    **{
-                                        f"xi_err_{i}": xi_err[i]
-                                        for i in range(6)
-                                    },
+                                    **{f"xi_err_{i}": xi_err[i] for i in range(6)},
                                     inv_mult=invariant_mult,
                                 )
                             )
@@ -774,13 +814,32 @@ def run_experiment(cfg: BunnyExperimentConfig):
             num_outliers,
             data_association_certified,
         )
+        # Plot affinity matrix as a heatmap, with the inlier vector above it.
+        ax2 = plot_affinity(data_association.get_affinity(), inliers)
+        # Plot with no line color (for publication figures)
+        ax3 = plot_associations(
+            src_t,
+            trg_t,
+            inliers,
+            inliers_global,
+            num_outliers,
+            data_association_certified,
+            no_line_color=True,
+        )
+
         if cfg.save_results:
             fig_path = run_dir / "associations.png"
             ax.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")
             print(f"Saved figure to {fig_path}")
-        else:
-            from matplotlib import pyplot as plt
 
+            fig_path = run_dir / "affinity.png"
+            ax2.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")
+            print(f"Saved figure to {fig_path}")
+
+            fig_path = run_dir / "associations_no_line_color.png"
+            ax3.get_figure().savefig(fig_path, dpi=300, bbox_inches="tight")
+            print(f"Saved figure to {fig_path}")
+        else:
             plt.show()
 
 
