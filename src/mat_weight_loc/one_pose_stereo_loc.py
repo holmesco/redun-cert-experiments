@@ -5,7 +5,7 @@ import time
 import gtsam
 from gtsam.symbol_shorthand import X, S, T
 
-from utils.stereo_camera_model import StereoCameraModel
+from utils.stereo_camera_model import StereoCameraConfig, StereoCameraModel
 from utils.stereo_utils import get_gt_setup
 from utils.keypoint_tools import get_inv_cov_weights
 from utils.lie_algebra import se3_exp
@@ -116,7 +116,10 @@ def sim_single_pose_localization(
         batch_size, -1, -1
     )
     # Set up stereo model
-    stereo_cam = StereoCameraModel(0.0, 0.0, 484.5, 0.24, pixel_noise).to(torch_device)
+    stereo_cam_config = StereoCameraConfig(
+        cu=0.0, cv=0.0, f=484.5, b=0.24, sigma=pixel_noise
+    )
+    stereo_cam = StereoCameraModel(stereo_cam_config).to(torch_device)
 
     # vehicle to sensor transform
     pert = 0.0

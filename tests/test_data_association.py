@@ -58,7 +58,7 @@ def test_inliers_to_soln(bunny_stereo_synthetic):
     )
     soln_from_inliers, cost = data_association.inliers_to_solution(inliers=inliers)
     # assert that the solutions are the same
-    assert np.linalg.allclose(
+    assert np.allclose(
         soln, soln_from_inliers, atol=1e-7
     ), "Solutions from run_clipper and inliers_to_soln do not match"
 
@@ -155,7 +155,7 @@ def test_ransac_cert(bunny_stereo_synthetic):
     data_association_config.invariant_sigma = 0.001
     data_association = DataAssociationBlock(data_association_config)
     # Run the CLIPPER SDP block to get inliers and the solution u
-    inliers, x_torch, cost = data_association.run_ransac(
+    inliers, x, cost = data_association.run_ransac(
         torch.from_numpy(points_c1.T).float().to("cpu"),  # (4,N)
         torch.from_numpy(points_c2.T).float().to("cpu"),  # (4,N)
     )
@@ -164,7 +164,6 @@ def test_ransac_cert(bunny_stereo_synthetic):
         torch.sum(inliers) >= points_c1.shape[0] - n_outliers
     ), f"Expected at least {points_c1.shape[0] - n_outliers} inliers, but got {torch.sum(inliers)} inliers out of {points_c1.shape[0]} total points"
     # Test certification
-    x = x_torch.cpu().numpy()
     result = data_association.certify_solution(x, check_constraints=True)
     assert result.certified, "Certifier could not certify solution"
 
